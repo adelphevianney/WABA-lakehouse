@@ -1,0 +1,45 @@
+# --- Secrets & configuration locale ---------------------------------------
+.env
+*.env
+!README.env.example
+*.pem
+*.key
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# --- Données générées (jamais versionnées) --------------------------------
+data/
+out/
+*.csv
+*.parquet
+!docs/**/*.csv
+
+# --- Spark / Airflow ------------------------------------------------------
+spark-warehouse/
+derby.log
+metastore_db/
+airflow/logs/
+airflow/airflow.db
+airflow/*.cfg
+!airflow/airflow.cfg.example
+
+# --- Documents de travail --------------------------------------------------
+# L'énoncé du challenge et ses captures sont conservés en local comme référence
+# de travail, mais n'ont pas leur place dans le livrable remis à l'évaluateur.
+# Le write-up technique, lui, est un livrable : il vit dans writeup/.
+docs/
+
+# --- Divers ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

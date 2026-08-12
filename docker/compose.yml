@@ -1,0 +1,156 @@
+# =============================================================================
+# WABA Group — stack locale, organisée en profils Docker Compose.
+#
+#   --profile l1   MinIO + catalogue Iceberg REST + Trino  (+ Spark, Streamlit)
+#   --profile l2   ajoute Airflow
+#   --profile l3   ajoute Kafka + NiFi
+#
+# La machine cible du développement dispose de 16 Go de RAM : les profils sont
+# volontairement exclusifs plutôt que cumulatifs, et chaque service porte une
+# limite mémoire explicite. Voir docs/writeup/ pour la justification.
+# =============================================================================
+name: waba
+
+x-s3-credentials: &s3-credentials
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER manquant - copier README.env.example en .env}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD manquant}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Level 1.2 — Object Storage
+  # ---------------------------------------------------------------------------
+  minio:
+    image: ${MINIO_IMAGE}
+    container_name: waba-minio
+    profiles: ["l1", "l2", "l3", "l4"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    mem_limit: 1g
+    networks: [waba]
+
+  # Création idempotente des trois buckets du sujet. Conteneur one-shot.
+  minio-init:
+    image: ${MC_IMAGE}
+    container_name: waba-minio-init
+    profiles: ["l1", "l2", "l3", "l4"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      BUCKET_RAW: ${BUCKET_RAW:-raw-landing}
+      BUCKET_LAKEHOUSE: ${BUCKET_LAKEHOUSE:-lakehouse}
+      BUCKET_ARCHIVE: ${BUCKET_ARCHIVE:-archive}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set waba http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "waba/$$BUCKET_RAW" "waba/$$BUCKET_LAKEHOUSE" "waba/$$BUCKET_ARCHIVE"
+        echo "--- Buckets WABA ---"
+        mc ls waba
+    restart: "no"
+    networks: [waba]
+
+  # Le service iceberg-rest tourne en uid 1000, alors que Docker initialise tout
+  # volume nommé en root:root — SQLite ne peut alors pas créer sa base. Ce
+  # conteneur one-shot aligne les droits ; c'est l'exact équivalent Compose de
+  # l'initContainer qui sera utilisé dans les manifestes Kubernetes du Level 4.
+  catalog-init:
+    image: ${MC_IMAGE}
+    container_name: waba-catalog-init
+    profiles: ["l1", "l2", "l3", "l4"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mkdir -p /persist
+        chown -R 1000:1000 /persist
+        echo "Volume du catalogue Iceberg prêt (uid 1000)"
+    volumes:
+      - iceberg-catalog:/persist
+    restart: "no"
+    networks: [waba]
+
+  # ---------------------------------------------------------------------------
+  # Level 1.3 — Catalogue Iceberg
+  # Choix : catalogue REST (autorisé par le sujet) plutôt qu'un Hive Metastore,
+  # qui aurait imposé un Postgres supplémentaire pour ~1,5 Go de RAM en plus.
+  # Métadonnées persistées dans un SQLite sur volume : le catalogue survit à un
+  # `down` sans `-v`, condition nécessaire pour démontrer l'idempotence.
+  # ---------------------------------------------------------------------------
+  iceberg-rest:
+    image: ${ICEBERG_REST_IMAGE}
+    container_name: waba-iceberg-rest
+    profiles: ["l1", "l2", "l3", "l4"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      catalog-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *s3-credentials
+      CATALOG_URI: jdbc:sqlite:/persist/waba_catalog.db
+      CATALOG_WAREHOUSE: ${ICEBERG_WAREHOUSE:-s3://lakehouse/}
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+    ports:
+      - "${ICEBERG_REST_PORT:-8181}:8181"
+    volumes:
+      - iceberg-catalog:/persist
+    mem_limit: 768m
+    networks: [waba]
+
+  # ---------------------------------------------------------------------------
+  # Level 1.4 — Moteur de requêtes SQL
+  # ---------------------------------------------------------------------------
+  trino:
+    image: ${TRINO_IMAGE}
+    container_name: waba-trino
+    profiles: ["l1", "l2", "l3", "l4"]
+    depends_on:
+      iceberg-rest:
+        condition: service_started
+    environment:
+      # Injectés dans le catalogue via la syntaxe ${ENV:...} de Trino :
+      # aucun credential n'est écrit en clair dans les fichiers de config.
+      <<: *s3-credentials
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+    ports:
+      - "${TRINO_PORT:-8080}:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    mem_limit: 3g
+    networks: [waba]
+
+volumes:
+  minio-data:
+  iceberg-catalog:
+
+networks:
+  waba:
+    name: waba
