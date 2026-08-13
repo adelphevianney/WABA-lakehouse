@@ -16,19 +16,31 @@
 #   9. les requêtes analytiques du §1.4 s'exécutent contre Trino.
 #
 # Usage : bash scripts/smoke_l1.sh    (ou `make smoke-l1`)
-#
-# Note pour un test depuis Git Bash sous Windows : préfixer par
-# `MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'`, sans quoi MSYS réécrit les
-# chemins absolus passés aux conteneurs (/data/... -> C:/Program Files/Git/...).
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# Sous Git Bash, MSYS réécrit les chemins absolus passés aux conteneurs :
+# /data/... devient C:/Program Files/Git/data/... La neutralisation est faite
+# ici plutôt que laissée à l'appelant. Sans effet hors Windows.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
 
 COMPOSE=(docker compose --env-file .env -f docker/compose.yml)
 
 step() { printf '\n\033[36m==> %s\033[0m\n' "$1" >&2; }
 ok()   { printf '\033[32m    OK  %s\033[0m\n' "$1" >&2; }
 fail() { printf '\033[31m    KO  %s\033[0m\n' "$1" >&2; exit 1; }
+
+# Recherche dans une chaîne, sans passer par un tuyau.
+#
+# `echo "$x" | grep -q motif` est un piège avec `set -o pipefail` : grep -q
+# s'arrête au premier résultat et ferme le tuyau, echo reçoit un SIGPIPE, et
+# pipefail propage l'échec alors que le motif a bien été trouvé. Le défaut reste
+# invisible tant que la sortie est courte — echo finit d'écrire avant que grep
+# ne sorte — puis apparaît quand le volume augmente.
+contains()      { [[ "$2" == *"$1"* ]]; }
+contains_line() { [[ $'\n'"$2"$'\n' == *$'\n'"$1"$'\n'* ]]; }
 
 # --output-format TSV rend la sortie directement analysable (pas de guillemets
 # ni de cadre ASCII) ; --no-progress supprime les échappements de terminal.
@@ -59,7 +71,8 @@ done
 
 # --- 2. Catalogue Trino ------------------------------------------------------
 step "2/9 — Catalogue Iceberg visible depuis Trino"
-trino_sql "SHOW CATALOGS" | grep -qx iceberg \
+catalogs=$(trino_sql "SHOW CATALOGS")
+contains_line iceberg "$catalogs" \
   && ok "catalogue iceberg exposé" || fail "catalogue iceberg absent"
 
 # --- 3. Aller-retour SQL sur une table Iceberg -------------------------------
@@ -94,16 +107,18 @@ count=$(trino_sql "SELECT count(*) FROM iceberg.smoke.ping" | tr -dc '0-9')
 step "4/9 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
 objects=$(mc_run "mc ls --recursive waba/lakehouse")
 
-echo "$objects" | grep -q '\.parquet' || fail "aucun objet Parquet dans le bucket lakehouse"
-echo "$objects" | grep '\.parquet' | head -3 | awk '{print "    " $NF}'
+contains '.parquet' "$objects" || fail "aucun objet Parquet dans le bucket lakehouse"
+# awk plutôt que `grep | head` : il lit tout le flux au lieu de sortir en cours
+# de route, ce qui évite le même SIGPIPE que ci-dessus.
+printf '%s\n' "$objects" | awk '/\.parquet/ && ++n <= 3 {print "    " $NF}'
 ok "données Parquet écrites dans s3://lakehouse"
 
 # Iceberg matérialise la clé de partition dans le chemin des objets.
-echo "$objects" | grep -q 'country_code=' \
+contains 'country_code=' "$objects" \
   && ok "partitionnement physique par country_code confirmé" \
   || fail "les objets ne sont pas partitionnés par country_code"
 
-echo "$objects" | grep -q '\.metadata\.json' \
+contains '.metadata.json' "$objects" \
   && ok "métadonnées Iceberg (snapshots) écrites" \
   || fail "aucune métadonnée Iceberg trouvée"
 
@@ -132,7 +147,7 @@ step "7/9 — Ingestion Spark vers les 8 tables raw.*"
 tables=$(trino_sql "SHOW TABLES FROM iceberg.raw")
 for table in customers accounts branches products \
              bank_transactions insurance_operations mobile_money_payments loan_repayments; do
-  echo "$tables" | grep -qx "$table" || fail "table raw.${table} absente"
+  contains_line "$table" "$tables" || fail "table raw.${table} absente"
 done
 ok "les 8 tables raw.* existent dans Trino"
 

@@ -14,6 +14,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Sous Git Bash, MSYS réécrit les chemins absolus passés aux conteneurs :
+# /sql/level1/x.sql devient C:/Program Files/Git/sql/level1/x.sql et le client
+# Trino ne trouve rien. La neutralisation est faite ici plutôt que laissée à
+# l'appelant, qui n'a pas à connaître ce détail. Sans effet hors Windows.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
 COMPOSE=(docker compose --env-file .env -f docker/compose.yml)
 
 for file in sql/level1/*.sql; do
