@@ -173,7 +173,92 @@ Keycloak du Level 4.
 
 ---
 
-## Mesures
+## J3 — Jobs Spark d'ingestion
+
+### D12. Spark en mode local, jars intégrés à l'image
+
+**Contexte.** L'ingestion porte sur des lots de quelques dizaines de milliers à
+quelques millions de lignes, sur une machine de 16 Go.
+
+**Décision.** Spark tourne en `local[*]` dans un conteneur unique. Les quatre jars
+nécessaires — `iceberg-spark-runtime`, `iceberg-aws-bundle`, `hadoop-aws`,
+`aws-java-sdk-bundle` — sont intégrés à l'image plutôt que résolus par
+`--packages` au lancement.
+
+**Alternative écartée.** Un cluster autonome master + worker, qui aurait coûté
+3 Go de mémoire supplémentaires sans rien apporter à cette échelle.
+
+**Conséquence assumée.** Le job démarre sans accès réseau et sans latence de
+résolution Maven, mais l'image pèse environ 1 Go. Deux piles d'accès au stockage
+cohabitent et il faut le savoir : Iceberg écrit via son propre `S3FileIO`, tandis
+que la lecture des CSV passe par le système de fichiers Hadoop `s3a`. Configurer
+l'une ne configure pas l'autre — une session à laquelle il manque la seconde
+écrit correctement dans le lakehouse mais ne sait pas lire sa source.
+
+### D13. Lire en texte, typer ensuite
+
+**Contexte.** Le §1.3 demande de rejeter les lignes malformées. Laisser Spark
+convertir à la lecture transforme toute valeur invalide en `null`, sans
+distinction possible entre une donnée absente et une donnée corrompue.
+
+**Décision.** Le schéma de lecture est entièrement textuel ; la conversion est
+explicite et postérieure à la validation. Une valeur présente mais non
+convertible est identifiée comme telle et rejetée avec son motif.
+
+**Conséquence assumée.** Les lignes écartées sont conservées dans une table
+`raw.ingestion_rejects` avec leur motif et leur fichier d'origine. Sans elle,
+tout écart de volumétrie entre la source et la cible serait inexplicable. Par
+ailleurs, l'option `enforceSchema=false` fait vérifier l'en-tête du fichier
+contre le schéma : par défaut, Spark apparie les colonnes **par position** et un
+fichier réordonné serait ingéré de travers, silencieusement.
+
+### D14. Idempotence par MERGE, sous trois conditions
+
+**Contexte.** Critère d'évaluation explicite : rejouer un job sur un même fichier
+ne doit pas créer de doublons.
+
+**Décision.** `MERGE INTO ... WHEN NOT MATCHED THEN INSERT` sur la clé naturelle.
+Trois précautions rendent la garantie effective, et aucune n'est optionnelle :
+
+1. **Déduplication de la source avant le MERGE.** Iceberg refuse qu'une ligne
+   cible soit appariée plusieurs fois, mais deux lignes identiques d'un même lot
+   ne correspondent à *aucune* ligne cible : elles seraient toutes deux insérées.
+2. **Format de table v2.** Le MERGE s'appuie sur les suppressions au niveau
+   ligne ; une table v1 échouerait.
+3. **`country_code` dans le prédicat d'appariement.** C'est une colonne de
+   partition : sans elle, chaque lot balaierait l'intégralité de la table.
+
+**Vérification.** Le test de fumée redépose un jeu de données strictement
+identique — même graine, donc mêmes identifiants — sous de nouveaux noms de
+fichiers, réingère, et compare les comptages : 111 250 lignes avant, 111 250
+après.
+
+### D15. Ingestion par lots bornés
+
+**Contexte.** Une première exécution sur une zone d'atterrissage ayant accumulé
+816 fichiers a fait tomber le driver Spark.
+
+**Décision.** Les fichiers sont traités par lots de 150 au maximum, paramétrable.
+Le coût mémoire devient indépendant du retard accumulé.
+
+**Conséquence assumée.** Plusieurs passes de lecture et de MERGE au lieu d'une,
+pour un gain de robustesse qui compte davantage : une zone d'atterrissage en
+retard est une situation d'exploitation normale, pas un cas limite.
+
+### D16. Les référentiels ne sont pas archivés
+
+**Contexte.** Le §1.2 demande de déplacer les fichiers traités vers le bucket
+d'archive. Appliqué aux référentiels, ce déplacement a produit un effet de bord
+que le test d'idempotence a révélé : le générateur, ne les trouvant plus, en
+recréait de nouveaux, et toutes les clés des transactions déjà déposées
+devenaient orphelines.
+
+**Décision.** Seuls les fichiers transactionnels sont archivés. Les référentiels
+sont des données de référence partagées, pas un flux consommé une fois ; ils
+restent disponibles et sont réingérés à chaque passe, sans effet grâce au MERGE.
+
+**Conséquence assumée.** Quelques dizaines de milliers de lignes relues à chaque
+exécution, pour un coût négligeable et une cohérence préservée.
 
 Budget mémoire relevé sur la machine de développement (Docker plafonné à 9,7 Go) :
 
@@ -191,4 +276,12 @@ Performance du générateur, à la volumétrie de l'annexe A :
 |---|---|---|
 | Référentiels complets | 500 000 clients + 800 000 comptes | 4,5 s |
 | Lot transactionnel | 240 000 lignes sur 8 pays | 0,9 s |
-| Suite de tests | 101 tests | 2,5 s |
+| Suite de tests | 159 tests | 4,2 s |
+
+Ingestion Spark vers Iceberg, en mode local sur 6 vCPU :
+
+| Étape | Volume | Durée |
+|---|---|---|
+| Ingestion complète des 8 tables | 28 fichiers, 111 250 lignes | ~90 s |
+| Un seul jeu de données | 102 fichiers, 1 004 000 lignes | 29 s |
+| Réingestion à l'identique | 111 250 lignes relues, 0 insérée | ~90 s |

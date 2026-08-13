@@ -30,8 +30,11 @@ check: ## Vérifie les prérequis (Docker, Compose, mémoire allouée)
 # --- Level 1 : socle lakehouse ------------------------------------------------
 
 .PHONY: up-l1
-up-l1: env ## Démarre le socle Level 1 (MinIO + Iceberg REST + Trino)
-	$(COMPOSE) --profile l1 up -d --wait
+up-l1: env ## Démarre le Level 1 (MinIO + Iceberg REST + Trino + générateur + Spark)
+	# `--build` garantit que les images correspondent au code du dépôt : sans
+	# lui, Compose réutilise une image existante et fait tourner une version
+	# antérieure des jobs sans le signaler.
+	$(COMPOSE) --profile l1 up -d --wait --build
 	@set -a && . ./.env && set +a && printf '\n  Console MinIO : http://localhost:%s\n  UI Trino      : http://localhost:%s\n  Iceberg REST  : http://localhost:%s\n\n' \
 		"$$MINIO_CONSOLE_PORT" "$$TRINO_PORT" "$$ICEBERG_REST_PORT"
 

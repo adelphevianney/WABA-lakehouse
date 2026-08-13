@@ -8,7 +8,11 @@
       2. Trino expose le catalogue `iceberg` ;
       3. une table Iceberg partitionnée par country_code peut être créée,
          alimentée et relue en SQL ;
-      4. les fichiers de données atterrissent bien dans MinIO.
+      4. les fichiers atterrissent bien dans MinIO ;
+      5. le générateur produit un jeu de données sur les 8 pays ;
+      6. ces données satisfont les critères du Level 1 ;
+      7. Spark les ingère dans les 8 tables Iceberg raw.* ;
+      8. rejouer l'ingestion ne crée aucun doublon.
 
 .NOTES
     Ce fichier doit rester encodé en UTF-8 AVEC BOM : Windows PowerShell 5.1
@@ -51,19 +55,19 @@ function Invoke-Mc {
 }
 
 # --- 1. Buckets MinIO --------------------------------------------------------
-Write-Step '1/6 — Buckets MinIO'
+Write-Step '1/8 — Buckets MinIO'
 foreach ($bucket in @('raw-landing', 'lakehouse', 'archive')) {
     $null = & docker @Compose exec -T minio test -d "/data/$bucket" 2>$null
     if ($LASTEXITCODE -eq 0) { Write-Ok "bucket $bucket" } else { Stop-Smoke "bucket $bucket absent" }
 }
 
 # --- 2. Catalogue Trino ------------------------------------------------------
-Write-Step '2/6 — Catalogue Iceberg visible depuis Trino'
+Write-Step '2/8 — Catalogue Iceberg visible depuis Trino'
 if ((Invoke-TrinoSql -Sql 'SHOW CATALOGS') -contains 'iceberg') { Write-Ok 'catalogue iceberg exposé' }
 else { Stop-Smoke 'catalogue iceberg absent' }
 
 # --- 3. Aller-retour SQL sur une table Iceberg -------------------------------
-Write-Step "3/6 — Création, écriture et lecture d'une table Iceberg partitionnée"
+Write-Step "3/8 — Création, écriture et lecture d'une table Iceberg partitionnée"
 $null = Invoke-TrinoSql -Sql 'DROP TABLE IF EXISTS iceberg.smoke.ping'
 $null = Invoke-TrinoSql -Sql 'CREATE SCHEMA IF NOT EXISTS iceberg.smoke'
 $null = Invoke-TrinoSql -Sql @"
@@ -97,7 +101,7 @@ else { Stop-Smoke "attendu 3 lignes, obtenu '$count'" }
 # --- 4. Persistance réelle dans MinIO ----------------------------------------
 # La vérification passe par l'API S3 (mc) et non par le système de fichiers :
 # c'est la vue qu'ont réellement Spark et Trino sur le stockage.
-Write-Step "4/6 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
+Write-Step "4/8 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
 $objects = Invoke-Mc 'mc ls --recursive waba/lakehouse'
 
 if (-not ($objects -match '\.parquet')) { Stop-Smoke 'aucun objet Parquet dans le bucket lakehouse' }
@@ -117,7 +121,7 @@ $null = Invoke-TrinoSql -Sql 'DROP TABLE iceberg.smoke.ping'
 $null = Invoke-TrinoSql -Sql 'DROP SCHEMA iceberg.smoke'
 
 # --- 5. Générateur -----------------------------------------------------------
-Write-Step "5/6 — Génération et dépôt d'un jeu de données multi-pays"
+Write-Step "5/8 — Génération et dépôt d'un jeu de données multi-pays"
 # `--reuse-referentials` est essentiel en exécution répétée : régénérer les
 # référentiels rendrait orphelines les clés des fichiers déjà déposés.
 $seeded = & docker @Compose exec -T streamlit python -m generator.seed `
@@ -127,8 +131,56 @@ Write-Host "    $($seeded | Select-Object -Last 1)" -ForegroundColor DarkGray
 Write-Ok 'jeu de données déposé dans raw-landing'
 
 # --- 6. Conformité des données -----------------------------------------------
-Write-Step '6/6 — Conformité des données déposées'
+Write-Step '6/8 — Conformité des données déposées'
 & docker @Compose exec -T streamlit python -m generator.verify
 if ($LASTEXITCODE -ne 0) { Stop-Smoke 'des contrôles de conformité ont échoué' }
+
+# --- 7. Ingestion Spark vers les tables Iceberg -------------------------------
+Write-Step '7/8 — Ingestion Spark vers les 8 tables raw.*'
+$ingested = & docker @Compose exec -T spark python3 -m jobs.batch.ingest_raw 2>$null
+if ($LASTEXITCODE -ne 0) { Stop-Smoke "échec de l'ingestion Spark" }
+($ingested | Select-Object -Last 12) | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+
+$tables = Invoke-TrinoSql -Sql 'SHOW TABLES FROM iceberg.raw'
+foreach ($table in @('customers', 'accounts', 'branches', 'products',
+                     'bank_transactions', 'insurance_operations',
+                     'mobile_money_payments', 'loan_repayments')) {
+    if ($tables -notcontains $table) { Stop-Smoke "table raw.$table absente" }
+}
+Write-Ok 'les 8 tables raw.* existent dans Trino'
+
+# Somme des lignes des huit tables, servant de témoin à la vérification
+# d'idempotence de l'étape suivante.
+$RawTotalSql = @"
+SELECT (SELECT count(*) FROM iceberg.raw.customers)
+     + (SELECT count(*) FROM iceberg.raw.accounts)
+     + (SELECT count(*) FROM iceberg.raw.branches)
+     + (SELECT count(*) FROM iceberg.raw.products)
+     + (SELECT count(*) FROM iceberg.raw.bank_transactions)
+     + (SELECT count(*) FROM iceberg.raw.insurance_operations)
+     + (SELECT count(*) FROM iceberg.raw.mobile_money_payments)
+     + (SELECT count(*) FROM iceberg.raw.loan_repayments)
+"@
+
+$before = (Invoke-TrinoSql -Sql $RawTotalSql) -replace '[^0-9]', ''
+if ([int]$before -le 0) { Stop-Smoke 'les tables raw.* sont vides' }
+Write-Ok "$before lignes ingérées, interrogeables en SQL"
+
+# --- 8. Idempotence -----------------------------------------------------------
+# Critère explicite de l'énoncé. La graine étant identique, le générateur
+# reproduit exactement les mêmes identifiants : les fichiers redéposés portent
+# un nouveau numéro de séquence mais un contenu ligne à ligne identique.
+Write-Step '8/8 — Idempotence : réingestion des mêmes données'
+$reseeded = & docker @Compose exec -T streamlit python -m generator.seed `
+    --preset demo --reuse-referentials --seed 42 2>&1
+Write-Host "    $($reseeded | Select-Object -Last 1)" -ForegroundColor DarkGray
+
+$replayed = & docker @Compose exec -T spark python3 -m jobs.batch.ingest_raw 2>$null
+if ($LASTEXITCODE -ne 0) { Stop-Smoke "échec de la réingestion" }
+($replayed | Select-Object -Last 12) | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+
+$after = (Invoke-TrinoSql -Sql $RawTotalSql) -replace '[^0-9]', ''
+if ($after -eq $before) { Write-Ok "aucun doublon créé ($before lignes avant et après)" }
+else { Stop-Smoke "idempotence rompue : $before lignes avant, $after après" }
 
 Write-Host "`n*** Socle Level 1 opérationnel ***`n" -ForegroundColor Green

@@ -178,6 +178,43 @@ services:
     mem_limit: 3g
     networks: [waba]
 
+  # ---------------------------------------------------------------------------
+  # Level 1.3 — Exécution des jobs PySpark
+  # ---------------------------------------------------------------------------
+  # Spark tourne en mode local dans un conteneur unique. Un cluster autonome
+  # avec un master et un worker n'apporterait rien sur ces volumétries, et
+  # coûterait 3 Go de mémoire supplémentaires sur une machine qui en compte 16.
+  spark:
+    build:
+      context: ..
+      dockerfile: docker/spark/Dockerfile
+    image: waba/spark:${WABA_VERSION:-dev}
+    container_name: waba-spark
+    profiles: ["l1", "l2", "l3", "l4"]
+    depends_on:
+      iceberg-rest:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *s3-credentials
+      MINIO_ENDPOINT: http://minio:9000
+      ICEBERG_REST_URI: http://iceberg-rest:8181
+      ICEBERG_WAREHOUSE: ${ICEBERG_WAREHOUSE:-s3://lakehouse/}
+      BUCKET_RAW: ${BUCKET_RAW:-raw-landing}
+      BUCKET_ARCHIVE: ${BUCKET_ARCHIVE:-archive}
+      WABA_GHS_PER_EUR: ${WABA_GHS_PER_EUR:-17.5}
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+      TZ: ${TZ:-UTC}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import pyspark, boto3"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    mem_limit: 3g
+    networks: [waba]
+
 volumes:
   minio-data:
   iceberg-catalog:

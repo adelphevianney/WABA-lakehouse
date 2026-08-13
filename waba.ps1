@@ -23,7 +23,14 @@ $Compose = @('compose', '--env-file', '.env', '-f', 'docker/compose.yml')
 
 function Invoke-Compose {
     param([string[]]$Arguments)
-    & docker @Compose @Arguments
+    # Docker écrit sa progression sur stderr sans que ce soit une erreur ; avec
+    # `ErrorActionPreference = 'Stop'`, Windows PowerShell 5.1 la convertit en
+    # exception et interrompt une commande qui a pourtant réussi. Seul le code
+    # de sortie fait foi.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & docker @Compose @Arguments }
+    finally { $ErrorActionPreference = $previous }
     if ($LASTEXITCODE -ne 0) { throw "docker compose a échoué (code $LASTEXITCODE)" }
 }
 
@@ -73,7 +80,10 @@ switch ($Command) {
 
     'up-l1' {
         Initialize-Env
-        Invoke-Compose @('--profile', 'l1', 'up', '-d', '--wait')
+        # `--build` garantit que les images correspondent au code du dépôt :
+        # sans lui, Compose réutilise une image existante et fait tourner une
+        # version antérieure des jobs sans le signaler.
+        Invoke-Compose @('--profile', 'l1', 'up', '-d', '--wait', '--build')
         Write-Host ''
         Write-Host "  Console MinIO : http://localhost:$(Get-EnvValue 'MINIO_CONSOLE_PORT' '9001')" -ForegroundColor Green
         Write-Host "  UI Trino      : http://localhost:$(Get-EnvValue 'TRINO_PORT' '8080')" -ForegroundColor Green

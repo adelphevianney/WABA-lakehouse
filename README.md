@@ -47,7 +47,7 @@ flowchart LR
 
 | Niveau | Périmètre | État |
 |---|---|---|
-| **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | 🟡 Socle et générateur opérationnels — jobs Spark en cours |
+| **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | ✅ Complet — générateur, ingestion Spark, 8 tables `raw.*` idempotentes |
 | **Level 2** | Orchestration Airflow & architecture Médaillon | ⬜ À venir |
 | **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | ⬜ À venir |
 | **Level 4** | Kubernetes, gouvernance & observabilité | ⬜ À venir |
@@ -91,10 +91,18 @@ Interfaces exposées :
 
 ### Vérifier
 
-`make smoke-l1` enchaîne six contrôles : buckets présents, catalogue Iceberg exposé dans Trino,
+`make smoke-l1` enchaîne huit contrôles : buckets présents, catalogue Iceberg exposé dans Trino,
 aller-retour SQL sur une table partitionnée par `country_code`, objets réellement écrits dans
-`s3://lakehouse`, génération d'un jeu de données sur les 8 pays, puis conformité de ces données.
+`s3://lakehouse`, génération d'un jeu de données sur les 8 pays, conformité de ces données,
+ingestion Spark vers les 8 tables `raw.*`, et enfin **preuve d'idempotence** : le même jeu de
+données est redéposé puis réingéré, et le nombre de lignes doit être strictement inchangé.
 Il sort en code non nul au moindre échec — c'est le contrôle de non-régression du niveau.
+
+Ingérer la zone d'atterrissage vers les tables Iceberg :
+
+```bash
+docker compose --env-file .env -f docker/compose.yml exec spark python3 -m jobs.batch.ingest_raw
+```
 
 Peupler le bucket sans passer par l'interface, par exemple pour préparer une démonstration :
 
@@ -155,9 +163,12 @@ swap=8GB
 ```
 .
 ├── docker/              # compose.yml (profils par niveau) et configuration des services
+│   ├── spark/           # image d'exécution des jobs (Iceberg + S3A)
 │   ├── streamlit/       # image du générateur
 │   └── trino/catalog/   # catalogues Trino (credentials injectés par variables d'env)
-├── common/              # code partagé générateur / jobs Spark (pseudonymisation)
+├── common/              # socle partagé générateur / jobs Spark
+│   ├── domain.py        #   périmètre, devises, matrice pays × entité, seuils
+│   └── pii.py           #   pseudonymisation et masquage
 ├── generator/           # Level 1.1 — génération de données
 │   ├── config.py        #   périmètre, matrice pays × entité, seuils réglementaires
 │   ├── referentials.py  #   clients, comptes, agences, produits
@@ -169,6 +180,14 @@ swap=8GB
 │   ├── app.py           #   interface Streamlit
 │   ├── seed.py          #   amorçage en ligne de commande
 │   └── verify.py        #   conformité des données déposées
+├── jobs/
+│   ├── batch/           # Levels 1-2 — ingestion et transformations PySpark
+│   │   ├── session.py   #   session Spark (catalogue Iceberg REST + accès S3A)
+│   │   ├── schemas.py   #   schémas explicites, DDL et clés d'idempotence
+│   │   ├── quality.py   #   validation et motifs de rejet
+│   │   ├── landing.py   #   recensement et archivage des fichiers
+│   │   └── ingest_raw.py#   job d'ingestion vers les 8 tables raw.*
+│   └── streaming/       # Level 3 — Spark Structured Streaming
 ├── jobs/
 │   ├── batch/           # Levels 1-2 — jobs PySpark (raw -> bronze -> silver -> gold)
 │   └── streaming/       # Level 3  — jobs Spark Structured Streaming
