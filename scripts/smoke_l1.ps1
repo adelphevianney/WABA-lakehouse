@@ -51,19 +51,19 @@ function Invoke-Mc {
 }
 
 # --- 1. Buckets MinIO --------------------------------------------------------
-Write-Step '1/4 — Buckets MinIO'
+Write-Step '1/6 — Buckets MinIO'
 foreach ($bucket in @('raw-landing', 'lakehouse', 'archive')) {
     $null = & docker @Compose exec -T minio test -d "/data/$bucket" 2>$null
     if ($LASTEXITCODE -eq 0) { Write-Ok "bucket $bucket" } else { Stop-Smoke "bucket $bucket absent" }
 }
 
 # --- 2. Catalogue Trino ------------------------------------------------------
-Write-Step '2/4 — Catalogue Iceberg visible depuis Trino'
+Write-Step '2/6 — Catalogue Iceberg visible depuis Trino'
 if ((Invoke-TrinoSql -Sql 'SHOW CATALOGS') -contains 'iceberg') { Write-Ok 'catalogue iceberg exposé' }
 else { Stop-Smoke 'catalogue iceberg absent' }
 
 # --- 3. Aller-retour SQL sur une table Iceberg -------------------------------
-Write-Step "3/4 — Création, écriture et lecture d'une table Iceberg partitionnée"
+Write-Step "3/6 — Création, écriture et lecture d'une table Iceberg partitionnée"
 $null = Invoke-TrinoSql -Sql 'DROP TABLE IF EXISTS iceberg.smoke.ping'
 $null = Invoke-TrinoSql -Sql 'CREATE SCHEMA IF NOT EXISTS iceberg.smoke'
 $null = Invoke-TrinoSql -Sql @"
@@ -97,7 +97,7 @@ else { Stop-Smoke "attendu 3 lignes, obtenu '$count'" }
 # --- 4. Persistance réelle dans MinIO ----------------------------------------
 # La vérification passe par l'API S3 (mc) et non par le système de fichiers :
 # c'est la vue qu'ont réellement Spark et Trino sur le stockage.
-Write-Step "4/4 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
+Write-Step "4/6 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
 $objects = Invoke-Mc 'mc ls --recursive waba/lakehouse'
 
 if (-not ($objects -match '\.parquet')) { Stop-Smoke 'aucun objet Parquet dans le bucket lakehouse' }
@@ -112,8 +112,23 @@ else { Stop-Smoke 'les objets ne sont pas partitionnés par country_code' }
 if ($objects -match '\.metadata\.json') { Write-Ok 'métadonnées Iceberg (snapshots) écrites' }
 else { Stop-Smoke 'aucune métadonnée Iceberg trouvée' }
 
-# --- Nettoyage ---------------------------------------------------------------
+# --- Nettoyage de la table de contrôle ---------------------------------------
 $null = Invoke-TrinoSql -Sql 'DROP TABLE iceberg.smoke.ping'
 $null = Invoke-TrinoSql -Sql 'DROP SCHEMA iceberg.smoke'
+
+# --- 5. Générateur -----------------------------------------------------------
+Write-Step "5/6 — Génération et dépôt d'un jeu de données multi-pays"
+# `--reuse-referentials` est essentiel en exécution répétée : régénérer les
+# référentiels rendrait orphelines les clés des fichiers déjà déposés.
+$seeded = & docker @Compose exec -T streamlit python -m generator.seed `
+    --preset demo --reuse-referentials --seed 42 2>&1
+if ($LASTEXITCODE -ne 0) { Stop-Smoke "échec de la génération : $($seeded | Select-Object -Last 1)" }
+Write-Host "    $($seeded | Select-Object -Last 1)" -ForegroundColor DarkGray
+Write-Ok 'jeu de données déposé dans raw-landing'
+
+# --- 6. Conformité des données -----------------------------------------------
+Write-Step '6/6 — Conformité des données déposées'
+& docker @Compose exec -T streamlit python -m generator.verify
+if ($LASTEXITCODE -ne 0) { Stop-Smoke 'des contrôles de conformité ont échoué' }
 
 Write-Host "`n*** Socle Level 1 opérationnel ***`n" -ForegroundColor Green

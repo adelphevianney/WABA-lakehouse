@@ -2,12 +2,15 @@
 # =============================================================================
 # Test de fumée du socle Level 1.
 #
-# Prouve la chaîne complète MinIO -> catalogue Iceberg REST -> Trino :
+# Prouve la chaîne complète générateur -> MinIO -> catalogue Iceberg REST -> Trino :
 #   1. les trois buckets du sujet existent ;
 #   2. Trino expose le catalogue `iceberg` ;
 #   3. une table Iceberg partitionnée par country_code peut être créée,
 #      alimentée et relue en SQL ;
-#   4. les fichiers de données et de métadonnées atterrissent bien dans MinIO.
+#   4. les fichiers de données et de métadonnées atterrissent bien dans MinIO ;
+#   5. le générateur produit et dépose un jeu de données sur les 8 pays ;
+#   6. ces données satisfont les critères d'évaluation du Level 1 (intégrité
+#      référentielle, partitionnement par pays, anomalies détectables).
 #
 # Usage : bash scripts/smoke_l1.sh    (ou `make smoke-l1`)
 #
@@ -45,19 +48,19 @@ mc_run() {
 }
 
 # --- 1. Buckets MinIO --------------------------------------------------------
-step "1/4 — Buckets MinIO"
+step "1/6 — Buckets MinIO"
 for bucket in raw-landing lakehouse archive; do
   "${COMPOSE[@]}" exec -T minio test -d "/data/${bucket}" \
     && ok "bucket ${bucket}" || fail "bucket ${bucket} absent"
 done
 
 # --- 2. Catalogue Trino ------------------------------------------------------
-step "2/4 — Catalogue Iceberg visible depuis Trino"
+step "2/6 — Catalogue Iceberg visible depuis Trino"
 trino_sql "SHOW CATALOGS" | grep -qx iceberg \
   && ok "catalogue iceberg exposé" || fail "catalogue iceberg absent"
 
 # --- 3. Aller-retour SQL sur une table Iceberg -------------------------------
-step "3/4 — Création, écriture et lecture d'une table Iceberg partitionnée"
+step "3/6 — Création, écriture et lecture d'une table Iceberg partitionnée"
 trino_sql "DROP TABLE IF EXISTS iceberg.smoke.ping" >/dev/null
 trino_sql "CREATE SCHEMA IF NOT EXISTS iceberg.smoke" >/dev/null
 trino_sql "CREATE TABLE iceberg.smoke.ping (
@@ -85,7 +88,7 @@ count=$(trino_sql "SELECT count(*) FROM iceberg.smoke.ping" | tr -dc '0-9')
 # --- 4. Persistance réelle dans MinIO ----------------------------------------
 # La vérification passe par l'API S3 (mc) et non par le système de fichiers :
 # c'est la vue qu'ont réellement Spark et Trino sur le stockage.
-step "4/4 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
+step "4/6 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
 objects=$(mc_run "mc ls --recursive waba/lakehouse")
 
 echo "$objects" | grep -q '\.parquet' || fail "aucun objet Parquet dans le bucket lakehouse"
@@ -101,8 +104,21 @@ echo "$objects" | grep -q '\.metadata\.json' \
   && ok "métadonnées Iceberg (snapshots) écrites" \
   || fail "aucune métadonnée Iceberg trouvée"
 
-# --- Nettoyage ----------------------------------------------------------------
+# --- Nettoyage de la table de contrôle ---------------------------------------
 trino_sql "DROP TABLE iceberg.smoke.ping" >/dev/null
 trino_sql "DROP SCHEMA iceberg.smoke"     >/dev/null
+
+# --- 5. Générateur -----------------------------------------------------------
+step "5/6 — Génération et dépôt d'un jeu de données multi-pays"
+# `--reuse-referentials` est essentiel en exécution répétée : régénérer les
+# référentiels rendrait orphelines les clés des fichiers déjà déposés.
+"${COMPOSE[@]}" exec -T streamlit python -m generator.seed \
+  --preset demo --reuse-referentials --seed 42 2>&1 | tail -1 | sed 's/^/    /'
+ok "jeu de données déposé dans raw-landing"
+
+# --- 6. Conformité des données -----------------------------------------------
+step "6/6 — Conformité des données déposées"
+"${COMPOSE[@]}" exec -T streamlit python -m generator.verify \
+  || fail "des contrôles de conformité ont échoué"
 
 printf '\n\033[32m*** Socle Level 1 opérationnel ***\033[0m\n\n'

@@ -1,0 +1,4 @@
+# Outillage de développement, hors image applicative.
+# Les dépendances d'exécution du générateur sont dans generator/requirements.txt.
+-r generator/requirements.txt
+pytest==7.4.4

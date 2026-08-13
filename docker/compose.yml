@@ -139,11 +139,42 @@ services:
     volumes:
       - ./trino/catalog:/etc/trino/catalog:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/v1/info"]
-      interval: 10s
+      # `/v1/info` répond bien avant que le coordinateur n'accepte des requêtes :
+      # se contenter d'un code 200 déclare le service prêt trop tôt et la
+      # première requête échoue. On attend que le champ `starting` retombe.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/v1/info | grep -q '\"starting\":false'"]
+      interval: 5s
       timeout: 5s
-      retries: 30
-      start_period: 20s
+      retries: 40
+      start_period: 15s
+    mem_limit: 3g
+    networks: [waba]
+
+  # ---------------------------------------------------------------------------
+  # Level 1.1 — Application de génération de données
+  # ---------------------------------------------------------------------------
+  streamlit:
+    build:
+      # Racine du dépôt : l'application dépend aussi du paquet `common`.
+      context: ..
+      dockerfile: docker/streamlit/Dockerfile
+    image: waba/generator:${WABA_VERSION:-dev}
+    container_name: waba-streamlit
+    profiles: ["l1", "l2", "l3", "l4"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *s3-credentials
+      MINIO_ENDPOINT: http://minio:9000
+      BUCKET_RAW: ${BUCKET_RAW:-raw-landing}
+      WABA_PII_KEY: ${WABA_PII_KEY:-}
+      WABA_GHS_PER_EUR: ${WABA_GHS_PER_EUR:-17.5}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    # Les référentiels à pleine volumétrie (500 000 clients, 800 000 comptes)
+    # et leurs vues pré-découpées par pays occupent environ 2 Go en mémoire.
     mem_limit: 3g
     networks: [waba]
 

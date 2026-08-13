@@ -47,7 +47,7 @@ flowchart LR
 
 | Niveau | Périmètre | État |
 |---|---|---|
-| **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | 🟡 Socle en place — générateur et jobs Spark en cours |
+| **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | 🟡 Socle et générateur opérationnels — jobs Spark en cours |
 | **Level 2** | Orchestration Airflow & architecture Médaillon | ⬜ À venir |
 | **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | ⬜ À venir |
 | **Level 4** | Kubernetes, gouvernance & observabilité | ⬜ À venir |
@@ -68,7 +68,7 @@ flowchart LR
 ```bash
 git clone <url-du-depot> && cd WABA
 cp README.env.example .env     # aucune valeur secrète à renseigner en local
-make up-l1                     # MinIO + catalogue Iceberg REST + Trino
+make up-l1                     # MinIO + Iceberg REST + Trino + générateur
 make smoke-l1                  # vérifie la chaîne de bout en bout
 ```
 
@@ -84,13 +84,54 @@ Interfaces exposées :
 
 | Service | URL | Identifiants |
 |---|---|---|
+| **Générateur (Streamlit)** | http://localhost:8501 | aucun (dev local) |
 | Console MinIO | http://localhost:9001 | ceux du `.env` |
 | Trino | http://localhost:8080 | aucun (dev local) |
 | Catalogue Iceberg REST | http://localhost:8181 | — |
 
-`make smoke-l1` crée une table Iceberg partitionnée par `country_code`, y insère des lignes, les
-relit en SQL, vérifie que les fichiers Parquet ont bien atterri dans `s3://lakehouse`, puis nettoie.
-Il sort en code non nul au moindre échec : c'est le contrôle de non-régression du socle.
+### Vérifier
+
+`make smoke-l1` enchaîne six contrôles : buckets présents, catalogue Iceberg exposé dans Trino,
+aller-retour SQL sur une table partitionnée par `country_code`, objets réellement écrits dans
+`s3://lakehouse`, génération d'un jeu de données sur les 8 pays, puis conformité de ces données.
+Il sort en code non nul au moindre échec — c'est le contrôle de non-régression du niveau.
+
+Peupler le bucket sans passer par l'interface, par exemple pour préparer une démonstration :
+
+```bash
+docker compose --env-file .env -f docker/compose.yml exec streamlit python -m generator.seed --preset full
+```
+
+Contrôler la conformité des données déjà déposées (intégrité référentielle, nomenclature,
+partitionnement par pays, détectabilité des anomalies) :
+
+```bash
+docker compose --env-file .env -f docker/compose.yml exec streamlit python -m generator.verify
+```
+
+Tests unitaires (hors conteneur, sans infrastructure) :
+
+```bash
+pip install -r requirements-dev.txt && PYTHONPATH=. pytest tests/ -q
+```
+
+## Le générateur
+
+L'application Streamlit (Level 1.1) produit des données simulant l'activité du groupe et les dépose
+dans `raw-landing`, organisées en sous-dossiers pays / type, à la nomenclature
+`bank_txn_[CC]_YYYYMMDD_NN.csv`.
+
+Trois partis pris qui la distinguent d'un générateur aléatoire :
+
+- **L'implantation du groupe est respectée.** Le mobile money n'existe qu'en CI, SN, BF et GH, la
+  microfinance qu'au ML, GN et BF, conformément au tableau des entités.
+- **Les KPIs réglementaires sont calibrés, pas subis.** Le taux de créances douteuses est ciblé par
+  pays dans la fourchette 3-8 %, et les sinistres sont dimensionnés à partir des primes encaissées
+  pour atteindre le loss ratio visé par branche. Sans cela, les tables Gold du Level 2 afficheraient
+  des ratios aberrants.
+- **Les anomalies sont injectées volontairement.** Rafales de virements, paiements depuis un pays
+  inhabituel, sinistres disproportionnés : aucune de ces situations ne survient par hasard, et sans
+  elles les règles de détection du Level 3 n'auraient rien à signaler.
 
 ## Contrainte mémoire — pourquoi des profils
 
@@ -114,8 +155,20 @@ swap=8GB
 ```
 .
 ├── docker/              # compose.yml (profils par niveau) et configuration des services
+│   ├── streamlit/       # image du générateur
 │   └── trino/catalog/   # catalogues Trino (credentials injectés par variables d'env)
-├── generator/           # Level 1.1 — application Streamlit de génération de données
+├── common/              # code partagé générateur / jobs Spark (pseudonymisation)
+├── generator/           # Level 1.1 — génération de données
+│   ├── config.py        #   périmètre, matrice pays × entité, seuils réglementaires
+│   ├── referentials.py  #   clients, comptes, agences, produits
+│   ├── transactions.py  #   les 4 flux transactionnels
+│   ├── calibration.py   #   cibles NPL et loss ratio
+│   ├── anomalies.py     #   injection ET détection de référence des fraudes
+│   ├── storage.py       #   dépôt dans MinIO
+│   ├── service.py       #   orchestration d'un cycle
+│   ├── app.py           #   interface Streamlit
+│   ├── seed.py          #   amorçage en ligne de commande
+│   └── verify.py        #   conformité des données déposées
 ├── jobs/
 │   ├── batch/           # Levels 1-2 — jobs PySpark (raw -> bronze -> silver -> gold)
 │   └── streaming/       # Level 3  — jobs Spark Structured Streaming

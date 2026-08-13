@@ -1,0 +1,17 @@
+# Réduit le contexte de construction : sans cela, Docker envoie au démon le
+# dépôt entier, captures d'écran de l'énoncé comprises.
+.git/
+.github/
+docs/
+writeup/
+k8s/
+superset/
+nifi/
+airflow/
+tests/
+**/__pycache__/
+**/*.pyc
+.env
+*.env
+.pytest_cache/
+.venv/

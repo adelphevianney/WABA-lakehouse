@@ -1,0 +1,7 @@
+# Dépendances de l'application de génération (Level 1.1).
+# Versions épinglées : ce sont celles sur lesquelles le générateur a été
+# développé et validé, y compris les mesures de performance du write-up.
+numpy==1.26.4
+pandas==2.2.2
+streamlit==1.32.0
+boto3==1.38.36
