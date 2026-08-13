@@ -12,7 +12,8 @@
 #   6. ces données satisfont les critères du Level 1 (intégrité référentielle,
 #      partitionnement par pays, anomalies détectables) ;
 #   7. Spark les ingère dans les 8 tables Iceberg raw.* ;
-#   8. rejouer l'ingestion sur les mêmes données ne crée aucun doublon.
+#   8. rejouer l'ingestion sur les mêmes données ne crée aucun doublon ;
+#   9. les requêtes analytiques du §1.4 s'exécutent contre Trino.
 #
 # Usage : bash scripts/smoke_l1.sh    (ou `make smoke-l1`)
 #
@@ -50,19 +51,19 @@ mc_run() {
 }
 
 # --- 1. Buckets MinIO --------------------------------------------------------
-step "1/8 — Buckets MinIO"
+step "1/9 — Buckets MinIO"
 for bucket in raw-landing lakehouse archive; do
   "${COMPOSE[@]}" exec -T minio test -d "/data/${bucket}" \
     && ok "bucket ${bucket}" || fail "bucket ${bucket} absent"
 done
 
 # --- 2. Catalogue Trino ------------------------------------------------------
-step "2/8 — Catalogue Iceberg visible depuis Trino"
+step "2/9 — Catalogue Iceberg visible depuis Trino"
 trino_sql "SHOW CATALOGS" | grep -qx iceberg \
   && ok "catalogue iceberg exposé" || fail "catalogue iceberg absent"
 
 # --- 3. Aller-retour SQL sur une table Iceberg -------------------------------
-step "3/8 — Création, écriture et lecture d'une table Iceberg partitionnée"
+step "3/9 — Création, écriture et lecture d'une table Iceberg partitionnée"
 trino_sql "DROP TABLE IF EXISTS iceberg.smoke.ping" >/dev/null
 trino_sql "CREATE SCHEMA IF NOT EXISTS iceberg.smoke" >/dev/null
 trino_sql "CREATE TABLE iceberg.smoke.ping (
@@ -90,7 +91,7 @@ count=$(trino_sql "SELECT count(*) FROM iceberg.smoke.ping" | tr -dc '0-9')
 # --- 4. Persistance réelle dans MinIO ----------------------------------------
 # La vérification passe par l'API S3 (mc) et non par le système de fichiers :
 # c'est la vue qu'ont réellement Spark et Trino sur le stockage.
-step "4/8 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
+step "4/9 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
 objects=$(mc_run "mc ls --recursive waba/lakehouse")
 
 echo "$objects" | grep -q '\.parquet' || fail "aucun objet Parquet dans le bucket lakehouse"
@@ -111,7 +112,7 @@ trino_sql "DROP TABLE iceberg.smoke.ping" >/dev/null
 trino_sql "DROP SCHEMA iceberg.smoke"     >/dev/null
 
 # --- 5. Générateur -----------------------------------------------------------
-step "5/8 — Génération et dépôt d'un jeu de données multi-pays"
+step "5/9 — Génération et dépôt d'un jeu de données multi-pays"
 # `--reuse-referentials` est essentiel en exécution répétée : régénérer les
 # référentiels rendrait orphelines les clés des fichiers déjà déposés.
 "${COMPOSE[@]}" exec -T streamlit python -m generator.seed \
@@ -119,12 +120,12 @@ step "5/8 — Génération et dépôt d'un jeu de données multi-pays"
 ok "jeu de données déposé dans raw-landing"
 
 # --- 6. Conformité des données -----------------------------------------------
-step "6/8 — Conformité des données déposées"
+step "6/9 — Conformité des données déposées"
 "${COMPOSE[@]}" exec -T streamlit python -m generator.verify \
   || fail "des contrôles de conformité ont échoué"
 
 # --- 7. Ingestion Spark vers les tables Iceberg -------------------------------
-step "7/8 — Ingestion Spark vers les 8 tables raw.*"
+step "7/9 — Ingestion Spark vers les 8 tables raw.*"
 "${COMPOSE[@]}" exec -T spark python3 -m jobs.batch.ingest_raw 2>/dev/null \
   | tail -12 | sed 's/^/    /'
 
@@ -154,7 +155,7 @@ ok "${before} lignes ingérées, interrogeables en SQL"
 # Critère explicite de l'énoncé. La graine étant identique, le générateur
 # reproduit exactement les mêmes identifiants : les fichiers redéposés portent
 # un nouveau numéro de séquence mais un contenu ligne à ligne identique.
-step "8/8 — Idempotence : réingestion des mêmes données"
+step "8/9 — Idempotence : réingestion des mêmes données"
 "${COMPOSE[@]}" exec -T streamlit python -m generator.seed \
   --preset demo --reuse-referentials --seed 42 2>&1 | tail -1 | sed 's/^/    /'
 "${COMPOSE[@]}" exec -T spark python3 -m jobs.batch.ingest_raw 2>/dev/null \
@@ -164,5 +165,16 @@ after=$(trino_sql "$RAW_TOTAL_SQL" | tr -dc '0-9')
 [ "$after" = "$before" ] \
   && ok "aucun doublon créé (${before} lignes avant et après)" \
   || fail "idempotence rompue : ${before} lignes avant, ${after} après"
+
+# --- 9. Requêtes analytiques --------------------------------------------------
+# Dernier point du §1.4 : « permettre des requêtes analytiques de base ».
+# Les résultats détaillés s'obtiennent avec `make queries-l1` ; ici on vérifie
+# seulement qu'elles s'exécutent toutes sans erreur.
+step "9/9 — Requêtes analytiques du §1.4"
+for query in sql/level1/*.sql; do
+  name=$(basename "$query")
+  "${COMPOSE[@]}" exec -T trino trino --no-progress -f "/sql/level1/${name}" >/dev/null 2>&1 \
+    && ok "${name}" || fail "la requête ${name} a échoué"
+done
 
 printf '\n\033[32m*** Socle Level 1 opérationnel ***\033[0m\n\n'

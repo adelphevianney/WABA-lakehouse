@@ -9,7 +9,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'env', 'check', 'up-l1', 'down-l1', 'smoke-l1', 'ps', 'logs', 'sql', 'clean')]
+    [ValidateSet('help', 'env', 'check', 'up-l1', 'down-l1', 'ingest-l1', 'queries-l1',
+        'smoke-l1', 'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
     [Parameter(Position = 1)]
@@ -60,7 +61,9 @@ switch ($Command) {
         Write-Host '    check      Vérifie les prérequis (Docker, Compose, mémoire)'
         Write-Host '    up-l1      Démarre le socle Level 1 (MinIO + Iceberg REST + Trino)'
         Write-Host '    down-l1    Arrête le Level 1 (données conservées)'
-        Write-Host '    smoke-l1   Vérifie de bout en bout MinIO -> Iceberg REST -> Trino'
+        Write-Host '    ingest-l1  Ingère la zone d''atterrissage vers les 8 tables raw.*'
+        Write-Host '    queries-l1 Exécute les requêtes analytiques du §1.4 contre Trino'
+        Write-Host '    smoke-l1   Vérifie de bout en bout générateur -> Spark -> Iceberg -> Trino'
         Write-Host '    ps         Consommation mémoire des conteneurs'
         Write-Host '    logs <svc> Suit les logs d''un service'
         Write-Host '    sql        Shell SQL Trino interactif'
@@ -91,6 +94,10 @@ switch ($Command) {
     }
 
     'down-l1' { Invoke-Compose @('--profile', 'l1', 'down') }
+
+    'ingest-l1' { Invoke-Compose @('exec', 'spark', 'python3', '-m', 'jobs.batch.ingest_raw') }
+
+    'queries-l1' { & "$PSScriptRoot\scripts\queries_l1.ps1" }
 
     'smoke-l1' { & "$PSScriptRoot\scripts\smoke_l1.ps1" }
 

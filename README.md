@@ -91,17 +91,24 @@ Interfaces exposées :
 
 ### Vérifier
 
-`make smoke-l1` enchaîne huit contrôles : buckets présents, catalogue Iceberg exposé dans Trino,
+`make smoke-l1` enchaîne neuf contrôles : buckets présents, catalogue Iceberg exposé dans Trino,
 aller-retour SQL sur une table partitionnée par `country_code`, objets réellement écrits dans
 `s3://lakehouse`, génération d'un jeu de données sur les 8 pays, conformité de ces données,
-ingestion Spark vers les 8 tables `raw.*`, et enfin **preuve d'idempotence** : le même jeu de
-données est redéposé puis réingéré, et le nombre de lignes doit être strictement inchangé.
-Il sort en code non nul au moindre échec — c'est le contrôle de non-régression du niveau.
+ingestion Spark vers les 8 tables `raw.*`, **preuve d'idempotence** — le même jeu est redéposé puis
+réingéré et le nombre de lignes doit être strictement inchangé — et enfin exécution des requêtes
+analytiques. Il sort en code non nul au moindre échec : c'est le contrôle de non-régression du niveau.
 
 Ingérer la zone d'atterrissage vers les tables Iceberg :
 
 ```bash
-docker compose --env-file .env -f docker/compose.yml exec spark python3 -m jobs.batch.ingest_raw
+make ingest-l1
+```
+
+Exécuter les requêtes analytiques du §1.4 — soldes par pays, volumes de transactions, comptages par
+entité, traçabilité de l'ingestion — dont le SQL commenté vit dans [`sql/level1/`](sql/level1) :
+
+```bash
+make queries-l1
 ```
 
 Peupler le bucket sans passer par l'interface, par exemple pour préparer une démonstration :
@@ -195,6 +202,7 @@ swap=8GB
 ├── nifi/                # Level 3  — templates de flux NiFi
 ├── superset/            # Level 4  — définitions des dashboards
 ├── k8s/                 # Level 4  — manifestes et charts Helm
+├── sql/level1/          # requêtes analytiques du §1.4, montées dans Trino
 ├── scripts/             # tests de fumée et utilitaires
 ├── tests/               # tests unitaires
 └── writeup/             # write-up technique (rédigé au fil de l'eau)

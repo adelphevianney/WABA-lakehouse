@@ -138,6 +138,10 @@ services:
       - "${TRINO_PORT:-8080}:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog:ro
+      # Les requêtes analytiques sont montées plutôt que passées en ligne de
+      # commande : le client les exécute depuis un fichier, ce qui évite tout
+      # échappement du SQL par le shell appelant.
+      - ../sql:/sql:ro
     healthcheck:
       # `/v1/info` répond bien avant que le coordinateur n'accepte des requêtes :
       # se contenter d'un code 200 déclare le service prêt trop tôt et la

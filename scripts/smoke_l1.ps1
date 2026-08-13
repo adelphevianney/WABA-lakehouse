@@ -12,7 +12,8 @@
       5. le générateur produit un jeu de données sur les 8 pays ;
       6. ces données satisfont les critères du Level 1 ;
       7. Spark les ingère dans les 8 tables Iceberg raw.* ;
-      8. rejouer l'ingestion ne crée aucun doublon.
+      8. rejouer l'ingestion ne crée aucun doublon ;
+      9. les requêtes analytiques du §1.4 s'exécutent contre Trino.
 
 .NOTES
     Ce fichier doit rester encodé en UTF-8 AVEC BOM : Windows PowerShell 5.1
@@ -55,19 +56,19 @@ function Invoke-Mc {
 }
 
 # --- 1. Buckets MinIO --------------------------------------------------------
-Write-Step '1/8 — Buckets MinIO'
+Write-Step '1/9 — Buckets MinIO'
 foreach ($bucket in @('raw-landing', 'lakehouse', 'archive')) {
     $null = & docker @Compose exec -T minio test -d "/data/$bucket" 2>$null
     if ($LASTEXITCODE -eq 0) { Write-Ok "bucket $bucket" } else { Stop-Smoke "bucket $bucket absent" }
 }
 
 # --- 2. Catalogue Trino ------------------------------------------------------
-Write-Step '2/8 — Catalogue Iceberg visible depuis Trino'
+Write-Step '2/9 — Catalogue Iceberg visible depuis Trino'
 if ((Invoke-TrinoSql -Sql 'SHOW CATALOGS') -contains 'iceberg') { Write-Ok 'catalogue iceberg exposé' }
 else { Stop-Smoke 'catalogue iceberg absent' }
 
 # --- 3. Aller-retour SQL sur une table Iceberg -------------------------------
-Write-Step "3/8 — Création, écriture et lecture d'une table Iceberg partitionnée"
+Write-Step "3/9 — Création, écriture et lecture d'une table Iceberg partitionnée"
 $null = Invoke-TrinoSql -Sql 'DROP TABLE IF EXISTS iceberg.smoke.ping'
 $null = Invoke-TrinoSql -Sql 'CREATE SCHEMA IF NOT EXISTS iceberg.smoke'
 $null = Invoke-TrinoSql -Sql @"
@@ -101,7 +102,7 @@ else { Stop-Smoke "attendu 3 lignes, obtenu '$count'" }
 # --- 4. Persistance réelle dans MinIO ----------------------------------------
 # La vérification passe par l'API S3 (mc) et non par le système de fichiers :
 # c'est la vue qu'ont réellement Spark et Trino sur le stockage.
-Write-Step "4/8 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
+Write-Step "4/9 — Objets Iceberg présents dans le bucket lakehouse (API S3)"
 $objects = Invoke-Mc 'mc ls --recursive waba/lakehouse'
 
 if (-not ($objects -match '\.parquet')) { Stop-Smoke 'aucun objet Parquet dans le bucket lakehouse' }
@@ -121,7 +122,7 @@ $null = Invoke-TrinoSql -Sql 'DROP TABLE iceberg.smoke.ping'
 $null = Invoke-TrinoSql -Sql 'DROP SCHEMA iceberg.smoke'
 
 # --- 5. Générateur -----------------------------------------------------------
-Write-Step "5/8 — Génération et dépôt d'un jeu de données multi-pays"
+Write-Step "5/9 — Génération et dépôt d'un jeu de données multi-pays"
 # `--reuse-referentials` est essentiel en exécution répétée : régénérer les
 # référentiels rendrait orphelines les clés des fichiers déjà déposés.
 $seeded = & docker @Compose exec -T streamlit python -m generator.seed `
@@ -131,12 +132,12 @@ Write-Host "    $($seeded | Select-Object -Last 1)" -ForegroundColor DarkGray
 Write-Ok 'jeu de données déposé dans raw-landing'
 
 # --- 6. Conformité des données -----------------------------------------------
-Write-Step '6/8 — Conformité des données déposées'
+Write-Step '6/9 — Conformité des données déposées'
 & docker @Compose exec -T streamlit python -m generator.verify
 if ($LASTEXITCODE -ne 0) { Stop-Smoke 'des contrôles de conformité ont échoué' }
 
 # --- 7. Ingestion Spark vers les tables Iceberg -------------------------------
-Write-Step '7/8 — Ingestion Spark vers les 8 tables raw.*'
+Write-Step '7/9 — Ingestion Spark vers les 8 tables raw.*'
 $ingested = & docker @Compose exec -T spark python3 -m jobs.batch.ingest_raw 2>$null
 if ($LASTEXITCODE -ne 0) { Stop-Smoke "échec de l'ingestion Spark" }
 ($ingested | Select-Object -Last 12) | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
@@ -170,7 +171,7 @@ Write-Ok "$before lignes ingérées, interrogeables en SQL"
 # Critère explicite de l'énoncé. La graine étant identique, le générateur
 # reproduit exactement les mêmes identifiants : les fichiers redéposés portent
 # un nouveau numéro de séquence mais un contenu ligne à ligne identique.
-Write-Step '8/8 — Idempotence : réingestion des mêmes données'
+Write-Step '8/9 — Idempotence : réingestion des mêmes données'
 $reseeded = & docker @Compose exec -T streamlit python -m generator.seed `
     --preset demo --reuse-referentials --seed 42 2>&1
 Write-Host "    $($reseeded | Select-Object -Last 1)" -ForegroundColor DarkGray
@@ -182,5 +183,16 @@ if ($LASTEXITCODE -ne 0) { Stop-Smoke "échec de la réingestion" }
 $after = (Invoke-TrinoSql -Sql $RawTotalSql) -replace '[^0-9]', ''
 if ($after -eq $before) { Write-Ok "aucun doublon créé ($before lignes avant et après)" }
 else { Stop-Smoke "idempotence rompue : $before lignes avant, $after après" }
+
+# --- 9. Requêtes analytiques --------------------------------------------------
+# Dernier point du §1.4 : « permettre des requêtes analytiques de base ».
+# Les résultats détaillés s'obtiennent avec `.\waba.ps1 queries-l1` ; ici on
+# vérifie seulement qu'elles s'exécutent toutes sans erreur.
+Write-Step '9/9 — Requêtes analytiques du §1.4'
+foreach ($query in Get-ChildItem -Path 'sql/level1' -Filter '*.sql' | Sort-Object Name) {
+    $null = & docker @Compose exec -T trino trino --no-progress -f "/sql/level1/$($query.Name)" 2>$null
+    if ($LASTEXITCODE -eq 0) { Write-Ok $query.Name }
+    else { Stop-Smoke "la requête $($query.Name) a échoué" }
+}
 
 Write-Host "`n*** Socle Level 1 opérationnel ***`n" -ForegroundColor Green

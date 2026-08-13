@@ -42,8 +42,16 @@ up-l1: env ## Démarre le Level 1 (MinIO + Iceberg REST + Trino + générateur +
 down-l1: ## Arrête le Level 1 (les données sont conservées)
 	$(COMPOSE) --profile l1 down
 
+.PHONY: ingest-l1
+ingest-l1: ## Ingère la zone d'atterrissage vers les 8 tables Iceberg raw.*
+	$(COMPOSE) exec spark python3 -m jobs.batch.ingest_raw
+
+.PHONY: queries-l1
+queries-l1: ## Exécute les requêtes analytiques du §1.4 contre Trino
+	@bash scripts/queries_l1.sh
+
 .PHONY: smoke-l1
-smoke-l1: ## Vérifie de bout en bout MinIO -> Iceberg REST -> Trino
+smoke-l1: ## Vérifie de bout en bout générateur -> Spark -> Iceberg -> Trino
 	@bash scripts/smoke_l1.sh
 
 # --- Exploitation --------------------------------------------------------------
