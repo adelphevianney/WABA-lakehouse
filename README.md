@@ -63,6 +63,10 @@ flowchart LR
 | RAM allouée à Docker | **8 Go minimum** | voir « Contrainte mémoire » plus bas |
 | GNU Make | optionnel | sous Windows, utiliser `.\waba.ps1` |
 
+Trois points d'entrée équivalents, qui appellent tous le même `docker compose` : le **`Makefile`**
+sous Linux et macOS, **`waba.ps1`** sous PowerShell, et les scripts **`scripts/*.sh`** depuis bash.
+`make help` et `.\waba.ps1 help` listent les commandes disponibles.
+
 ## Démarrage rapide
 
 ```bash
@@ -129,6 +133,66 @@ Tests unitaires (hors conteneur, sans infrastructure) :
 ```bash
 pip install -r requirements-dev.txt && PYTHONPATH=. pytest tests/ -q
 ```
+
+### Explorer en SQL
+
+Ouvrir un shell Trino interactif — sous Linux ou macOS :
+
+```bash
+make sql
+```
+
+Sous Windows (PowerShell) :
+
+```powershell
+.\waba.ps1 sql
+```
+
+Depuis Git Bash sous Windows, préfixer par `winpty` : sans lui, le shell ne fournit pas de vrai
+terminal et le client Trino bascule en mode dégradé, sans historique ni édition de ligne.
+
+```bash
+winpty docker compose --env-file .env -f docker/compose.yml exec trino trino
+```
+
+Quelques points de départ une fois dans le shell :
+
+```sql
+SHOW TABLES FROM iceberg.raw;
+DESCRIBE iceberg.raw.bank_transactions;
+
+-- Rend visible la matrice pays × entité : le mobile money ne doit apparaître
+-- qu'en BF, CI, GH, SN et la microfinance qu'en BF, GN, ML.
+SELECT entity_type,
+       array_join(array_agg(DISTINCT country_code ORDER BY country_code), ', ') AS pays
+FROM iceberg.raw.customers
+GROUP BY 1;
+
+-- Métadonnées Iceberg : historique des instantanés, qui matérialise la preuve
+-- d'idempotence — le premier ajoute 16 000 lignes, les réingestions suivantes
+-- n'en ajoutent aucune. `element_at` plutôt qu'un accès direct : la clé
+-- `added-records` est absente des instantanés qui n'ont rien inséré.
+-- Les guillemets sont obligatoires et ne survivent pas à un passage en ligne
+-- de commande — d'où l'intérêt du shell interactif.
+SELECT committed_at, operation,
+       element_at(summary, 'added-records') AS lignes_ajoutees,
+       element_at(summary, 'total-records') AS lignes_totales
+FROM iceberg.raw."bank_transactions$snapshots"
+ORDER BY committed_at;
+
+SELECT partition, record_count, file_count
+FROM iceberg.raw."bank_transactions$partitions"
+ORDER BY record_count DESC LIMIT 10;
+```
+
+Pour une requête ponctuelle sans ouvrir de session, `--execute` ne réclame aucun terminal :
+
+```bash
+docker compose --env-file .env -f docker/compose.yml exec -T trino trino --output-format ALIGNED --execute "SHOW TABLES FROM iceberg.raw"
+```
+
+L'interface web de Trino sur http://localhost:8080 est une **console de supervision** — requêtes en
+cours, temps d'exécution, volumes lus, élagage des partitions — et non un éditeur SQL.
 
 ## Le générateur
 
