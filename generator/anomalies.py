@@ -83,12 +83,20 @@ def inject_transaction_bursts(
     positions = rng.choice(len(frame), size=n_bursts * burst_size, replace=False)
     accounts = frame["account_id"].to_numpy()[rng.integers(0, len(frame), size=n_bursts)]
 
+    # La rafale décale les horodatages vers l'avant. Partir d'une transaction
+    # proche de la fin de la période la ferait déborder sur la journée suivante,
+    # et le fichier daté du jour J contiendrait des opérations de J+1 — ce qui
+    # crée une partition Iceberg parasite et contredit la nomenclature. On borne
+    # donc le point de départ à la dernière transaction du lot moins la fenêtre.
+    span_seconds = cfg.FRAUD_BURST_WINDOW_MINUTES * 60 - 30
+    latest_start = frame["timestamp"].max() - pd.Timedelta(seconds=span_seconds)
+
     for burst, account in enumerate(accounts):
         rows = positions[burst * burst_size:(burst + 1) * burst_size]
         # Toutes les opérations de la rafale tombent dans la même fenêtre de
         # moins de cinq minutes, condition de déclenchement de la règle.
-        base = frame["timestamp"].to_numpy()[rows[0]]
-        offsets = np.sort(rng.integers(0, cfg.FRAUD_BURST_WINDOW_MINUTES * 60 - 30, size=burst_size))
+        base = min(frame["timestamp"].to_numpy()[rows[0]], latest_start.to_numpy())
+        offsets = np.sort(rng.integers(0, span_seconds, size=burst_size))
 
         frame.iloc[rows, frame.columns.get_loc("account_id")] = account
         frame.iloc[rows, frame.columns.get_loc("timestamp")] = base + offsets.astype("timedelta64[s]")

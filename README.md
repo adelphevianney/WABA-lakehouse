@@ -108,8 +108,15 @@ Ingérer la zone d'atterrissage vers les tables Iceberg :
 make ingest-l1
 ```
 
+Fusionner les petits fichiers Parquet accumulés par les ingestions successives :
+
+```bash
+make compact-l1
+```
+
 Exécuter les requêtes analytiques du §1.4 — soldes par pays, volumes de transactions, comptages par
-entité, traçabilité de l'ingestion — dont le SQL commenté vit dans [`sql/level1/`](sql/level1) :
+entité, traçabilité de l'ingestion, santé du partitionnement — dont le SQL commenté vit dans
+[`sql/level1/`](sql/level1) :
 
 ```bash
 make queries-l1
@@ -211,6 +218,10 @@ Trois partis pris qui la distinguent d'un générateur aléatoire :
 - **Les anomalies sont injectées volontairement.** Rafales de virements, paiements depuis un pays
   inhabituel, sinistres disproportionnés : aucune de ces situations ne survient par hasard, et sans
   elles les règles de détection du Level 3 n'auraient rien à signaler.
+- **Un fichier par pays et par journée**, comme le veut la nomenclature `bank_txn_CI_20260101_01.csv`
+  où la date désigne le jour des transactions contenues. Un fichier couvrant tout un trimestre
+  respecterait la forme du nom mais éparpillerait les données sur 720 partitions Iceberg de
+  quelques dizaines de lignes, multipliant par dix le stockage par ligne.
 
 ## Contrainte mémoire — pourquoi des profils
 

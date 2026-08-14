@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, time as dtime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -59,7 +59,12 @@ def eligible_countries(kind: str, entity_types: tuple[str, ...] | None = None) -
 
 @dataclass(frozen=True)
 class GenerationRequest:
-    """Paramètres saisis dans l'interface."""
+    """Paramètres saisis dans l'interface.
+
+    `rows` s'entend **par fichier**, c'est-à-dire par pays et par journée : c'est
+    la lecture qui donne son sens aux valeurs par défaut de l'énoncé, un système
+    source produisant un fichier par jour et non un fichier par trimestre.
+    """
 
     kinds: tuple[str, ...]
     countries: tuple[str, ...]
@@ -68,21 +73,34 @@ class GenerationRequest:
     start: datetime
     end: datetime
     anomaly_rate: float = cfg.DEFAULT_ANOMALY_RATE
-    file_date: date | None = None
 
-    def resolved_file_date(self) -> date:
-        """Date portée par le nom de fichier, à défaut celle de fin de période."""
-        return self.file_date or self.end.date()
+    def days(self) -> list[date]:
+        """Journées couvertes par la période, une par fichier produit."""
+        first, last = self.start.date(), self.end.date()
+        return [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+
+    def file_count(self) -> int:
+        """Nombre de fichiers que produira la demande, pour affichage préalable."""
+        return sum(
+            len(self.days()) * len(set(self.countries) & set(eligible_countries(kind, self.entity_types)))
+            for kind in self.kinds
+        )
 
 
 @dataclass
 class BatchResult:
-    """Compte rendu d'un fichier déposé."""
+    """Compte rendu des fichiers déposés pour un couple type / pays.
+
+    Les journées sont agrégées : une demande sur un trimestre produit 90
+    fichiers par pays, et en détailler chacun rendrait le compte rendu
+    illisible.
+    """
 
     kind: str
     country_code: str
     rows: int
     key: str
+    files: int = 1
     anomalies: list[ano.AnomalyReport] = field(default_factory=list)
     skipped_reason: str | None = None
 
@@ -129,34 +147,64 @@ def run_batch(
     request: GenerationRequest,
     rng: np.random.Generator,
 ) -> list[BatchResult]:
-    """Génère, altère et dépose un fichier par couple type / pays demandé."""
+    """Génère, altère et dépose **un fichier par pays et par journée**.
+
+    Le découpage journalier n'est pas cosmétique. La nomenclature imposée,
+    `bank_txn_CI_20260101_01.csv`, désigne le jour des transactions contenues :
+    un fichier unique couvrant un trimestre entier respecterait la forme du nom
+    mais pas son sens. Il produit surtout un partitionnement Iceberg pathologique
+    — 8 pays x 90 jours donnent 720 partitions se partageant le volume d'un seul
+    fichier, soit quelques dizaines de lignes chacune, là où une journée de
+    données remplit correctement sa partition.
+    """
     results: list[BatchResult] = []
-    file_date = request.resolved_file_date()
+    days = request.days()
 
     for kind in request.kinds:
         allowed = eligible_countries(kind, request.entity_types)
+        n_rows = request.rows.get(kind, cfg.DEFAULT_ROWS[kind])
+
         for country in request.countries:
             if country not in allowed:
                 results.append(BatchResult(
-                    kind, country, 0, "",
+                    kind, country, 0, "", files=0,
                     skipped_reason=f"le groupe n'opère pas de {KIND_LABELS[kind].lower()} dans ce pays",
                 ))
                 continue
 
-            n_rows = request.rows.get(kind, cfg.DEFAULT_ROWS[kind])
-            try:
-                frame = txn.GENERATORS[kind](
-                    index, country, n_rows, request.start, request.end, rng,
-                    entity_types=request.entity_types or None,
+            total_rows = 0
+            reports: list[ano.AnomalyReport] = []
+            last_key = ""
+            failure: str | None = None
+
+            for day in days:
+                # Les horodatages sont bornés à la journée du fichier : c'est ce
+                # qui aligne le nom du fichier, son contenu et la partition
+                # Iceberg qui l'accueillera.
+                try:
+                    frame = txn.GENERATORS[kind](
+                        index, country, n_rows,
+                        datetime.combine(day, dtime.min),
+                        datetime.combine(day, dtime.max),
+                        rng, entity_types=request.entity_types or None,
+                    )
+                except ValueError as exc:
+                    failure = str(exc)
+                    break
+
+                frame, day_reports = ano.inject(
+                    kind, frame, index, country, request.anomaly_rate, rng
                 )
-            except ValueError as exc:
-                results.append(BatchResult(kind, country, 0, "", skipped_reason=str(exc)))
+                last_key = store.put_dataset(frame, kind, country, day)
+                total_rows += len(frame)
+                reports.extend(day_reports)
+
+            if failure is not None:
+                results.append(BatchResult(kind, country, 0, "", files=0, skipped_reason=failure))
                 continue
 
-            frame, reports = ano.inject(
-                kind, frame, index, country, request.anomaly_rate, rng
-            )
-            key = store.put_dataset(frame, kind, country, file_date)
-            results.append(BatchResult(kind, country, len(frame), key, reports))
+            results.append(BatchResult(
+                kind, country, total_rows, last_key, files=len(days), anomalies=reports,
+            ))
 
     return results

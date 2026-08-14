@@ -19,7 +19,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, time as dtime, timedelta
 
 import numpy as np
 
@@ -29,11 +29,21 @@ from generator import service, storage
 logger = logging.getLogger("generator.seed")
 
 #: Volumétries prêtes à l'emploi. « demo » vise un test de fumée rapide,
-#: « full » reprend les volumes de l'annexe A.
+#: « full » reprend les volumes et la période de l'annexe A.
+#:
+#: `rows` s'entend par fichier, donc par pays et par journée, et `days` fixe le
+#: nombre de journées simulées. Le couple doit rester cohérent : étaler un
+#: volume de démonstration sur un trimestre produirait quelques dizaines de
+#: lignes par jour, une volumétrie qu'aucune banque ne connaît, et autant de
+#: partitions Iceberg quasi vides.
 PRESETS: dict[str, dict[str, int]] = {
-    "demo": {"customers": 20_000, "accounts": 35_000, "branches": 200, "products": 50, "rows": 2_000},
-    "full": {**cfg.REFERENTIAL_SIZES, "rows": 0},
+    "demo": {"customers": 20_000, "accounts": 35_000, "branches": 200, "products": 50,
+             "rows": 700, "days": 3},
+    "full": {**cfg.REFERENTIAL_SIZES, "rows": 0, "days": 90},
 }
+
+#: Dernier jour simulé. La période remonte de `days` journées à partir de là.
+LAST_DAY: date = date(2026, 3, 31)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,7 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--customers", type=int, help="nombre de clients")
     parser.add_argument("--accounts", type=int, help="nombre de comptes")
     parser.add_argument("--rows", type=int,
-                        help="lignes par fichier de transactions (0 = valeurs par défaut de l'énoncé)")
+                        help="lignes par fichier, donc par pays et par jour "
+                             "(0 = valeurs par défaut de l'énoncé)")
+    parser.add_argument("--days", type=int,
+                        help="nombre de journées simulées, une par fichier")
     parser.add_argument("--countries", nargs="*", default=list(cfg.COUNTRY_CODES),
                         metavar="CC", help="pays à alimenter (défaut : les 8)")
     parser.add_argument("--kinds", nargs="*", default=list(service.KIND_LABELS),
@@ -73,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         "products": preset["products"],
     }
     rows_per_file = args.rows if args.rows is not None else preset["rows"]
+    days = max(args.days or preset["days"], 1)
+    first_day = LAST_DAY - timedelta(days=days - 1)
 
     store = storage.RawLandingStore()
     reachable, message = store.is_reachable()
@@ -95,10 +110,13 @@ def main(argv: list[str] | None = None) -> int:
         countries=tuple(args.countries),
         entity_types=(),
         rows={kind: rows_per_file for kind in args.kinds} if rows_per_file else {},
-        start=datetime(2026, 1, 1),
-        end=datetime(2026, 3, 31, 23, 59, 59),
+        start=datetime.combine(first_day, dtime.min),
+        end=datetime.combine(LAST_DAY, dtime.max),
         anomaly_rate=args.anomaly_rate,
-        file_date=date(2026, 3, 31),
+    )
+    logger.info(
+        "période simulée : %s au %s (%d jour(s)), %d fichier(s) attendu(s)",
+        first_day, LAST_DAY, days, request.file_count(),
     )
     results = service.run_batch(index, store, request, np.random.default_rng(args.seed))
 
@@ -108,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info(
         "%d fichiers, %s lignes, %d lignes altérées — en %.1f s",
-        len(produced),
+        sum(r.files for r in produced),
         f"{sum(r.rows for r in produced):,}",
         sum(a.rows for r in produced for a in r.anomalies),
         time.perf_counter() - started,

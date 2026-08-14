@@ -260,6 +260,51 @@ restent disponibles et sont réingérés à chaque passe, sans effet grâce au M
 **Conséquence assumée.** Quelques dizaines de milliers de lignes relues à chaque
 exécution, pour un coût négligeable et une cohérence préservée.
 
+### D17. Un fichier par journée, et compaction séparée
+
+**Contexte.** Après la première ingestion complète, la table `bank_transactions`
+comptait **720 partitions pour 16 000 lignes**, soit 22 lignes et un fichier Parquet de
+7 Ko par partition. Comparée au référentiel `accounts`, écrit en fichiers pleins, la
+même donnée occupait **308 octets par ligne contre 29** — un facteur dix.
+
+**Diagnostic.** Le partitionnement `days(timestamp)` n'était pas en cause : c'est le
+bon choix pour une banque traitant des millions d'opérations par jour, et l'élagage par
+jour est précisément ce qu'on en attend. La cause racine était la **forme des données
+générées** : un fichier unique par pays couvrait un trimestre entier, soit 22
+transactions par jour et par pays. Aucun système source ne produit cela — et la
+nomenclature imposée par l'énoncé, `bank_txn_CI_20260101_01.csv`, désigne bien le
+**jour** des transactions contenues. On respectait la forme du nom, pas son sens.
+
+Le morcellement coûte sur trois plans : Parquet ne peut amortir ni ses dictionnaires ni
+ses statistiques de colonnes sur quelques dizaines de lignes ; sur un stockage objet,
+chaque fichier est une requête HTTP dont la latence domine complètement le temps de
+transfert ; et Iceberg référence chaque fichier dans ses manifestes, relus à chaque
+planification de requête.
+
+**Décision.** Deux mesures complémentaires.
+
+1. Le générateur produit **un fichier par pays et par journée**, aligné sur la
+   nomenclature. Le préréglage `demo` couvre trois jours ; l'interface Streamlit
+   conserve le dernier trimestre par défaut, exigé par le §1.1, et annonce désormais le
+   nombre de fichiers avant de lancer.
+2. Un job de compaction dédié, `jobs.batch.compact`, fusionne les petits fichiers via
+   `rewrite_data_files`. Il reste nécessaire quelle que soit la forme des données : des
+   ingestions successives dans les mêmes partitions y ajoutent chacune leurs fichiers
+   sans réécrire les précédents. Le séparer de l'ingestion sépare deux responsabilités
+   aux rythmes distincts ; au Level 2 il deviendra un DAG de maintenance.
+
+**Alternative écartée.** Passer à `months()`. Cela aurait masqué le symptôme sans
+traiter la cause, et éloigné le partitionnement de ce qu'on ferait en production.
+
+**Conséquence assumée.** Une demande portant sur un trimestre produit 90 fichiers par
+pays et par type. C'est volumineux, mais conforme à ce que décrit l'énoncé.
+
+**Effet de bord découvert.** Le contrôle du partitionnement a révélé un défaut du
+générateur : l'injection de rafales de fraude décale les horodatages vers l'avant et,
+partie d'une transaction proche de minuit, débordait sur le lendemain. Cinq lignes d'un
+fichier daté du 31 mars portaient un horodatage du 1er avril, créant deux partitions
+parasites. Le point de départ d'une rafale est désormais borné, et un test le vérifie.
+
 Budget mémoire relevé sur la machine de développement (Docker plafonné à 9,7 Go) :
 
 | Niveau | Services | `mem_limit` cumulée | Consommation mesurée |
@@ -282,6 +327,15 @@ Ingestion Spark vers Iceberg, en mode local sur 6 vCPU :
 
 | Étape | Volume | Durée |
 |---|---|---|
-| Ingestion complète des 8 tables | 28 fichiers, 111 250 lignes | ~90 s |
+| Ingestion complète des 8 tables | 84 fichiers, 113 800 lignes | ~90 s |
 | Un seul jeu de données | 102 fichiers, 1 004 000 lignes | 29 s |
-| Réingestion à l'identique | 111 250 lignes relues, 0 insérée | ~90 s |
+| Réingestion à l'identique | lignes relues, 0 insérée | ~90 s |
+
+Effet du découpage journalier et de la compaction sur `raw.bank_transactions` :
+
+| État | Partitions | Fichiers | Lignes/partition | Octets/ligne |
+|---|---:|---:|---:|---:|
+| Un fichier par trimestre | 720 | 720 | 22 | **308** |
+| Un fichier par journée | 24 | 24 | 700 | **43** |
+| Après 4 ingestions successives | 24 | 96 | 4 200 | 46 |
+| Après compaction | 24 | **24** | 4 200 | **40** |

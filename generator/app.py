@@ -225,9 +225,17 @@ interval = (
 )
 
 
-def build_request() -> service.GenerationRequest:
+def build_request(single_day: bool = False) -> service.GenerationRequest:
+    """Construit la demande de génération.
+
+    `single_day` sert au mode continu : chaque cycle ne produit qu'une journée,
+    celle de fin de période. Rejouer l'ensemble de la période à chaque cycle
+    déposerait 90 fichiers par pays toutes les quinze secondes.
+    """
     start, end = (period if isinstance(period, tuple) and len(period) == 2
                   else (start_default, end_default))
+    if single_day:
+        start = end
     return service.GenerationRequest(
         kinds=tuple(selected_kinds),
         countries=tuple(selected_countries),
@@ -249,8 +257,9 @@ def render_results(results: list[service.BatchResult]) -> None:
                 {
                     "Pays": r.country_code,
                     "Type": service.KIND_LABELS[r.kind],
+                    "Fichiers": r.files,
                     "Lignes": r.rows,
-                    "Fichier": r.key,
+                    "Dernier fichier": r.key,
                     "Anomalies": sum(a.rows for a in r.anomalies),
                 }
                 for r in produced
@@ -270,6 +279,25 @@ def render_results(results: list[service.BatchResult]) -> None:
 ready = bool(selected_kinds and selected_countries)
 if not ready:
     st.info("Sélectionner au moins un type de données et un pays.")
+else:
+    # Un fichier par pays et par journée : sur un trimestre, la demande porte
+    # vite sur plusieurs centaines de fichiers. L'annoncer avant de lancer évite
+    # la surprise, d'autant que l'ingestion Spark devra tous les relire.
+    planned = build_request()
+    total_files = planned.file_count()
+    total_rows = sum(
+        row_counts.get(kind, cfg.DEFAULT_ROWS[kind]) * len(planned.days())
+        * len(set(selected_countries) & set(service.eligible_countries(kind, tuple(selected_entities))))
+        for kind in selected_kinds
+    )
+    message = (
+        f"{len(planned.days())} journée(s) simulée(s) → **{total_files} fichiers**, "
+        f"environ {total_rows:,} lignes.".replace(",", " ")
+    )
+    if total_files > 200:
+        st.warning(message + " Volume important : la génération et l'ingestion prendront du temps.")
+    else:
+        st.info(message)
 
 # --- Mode ponctuel -----------------------------------------------------------
 
@@ -301,7 +329,9 @@ else:
 
     if st.session_state["continuous"]:
         index = get_index(st.session_state["index_version"])
-        results = service.run_batch(index, store, build_request(), np.random.default_rng())
+        results = service.run_batch(
+            index, store, build_request(single_day=True), np.random.default_rng()
+        )
         st.session_state["cycles"] += 1
         st.session_state["history"].insert(0, {
             "Cycle": st.session_state["cycles"],

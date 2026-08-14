@@ -46,6 +46,10 @@ down-l1: ## Arrête le Level 1 (les données sont conservées)
 ingest-l1: ## Ingère la zone d'atterrissage vers les 8 tables Iceberg raw.*
 	$(COMPOSE) exec spark python3 -m jobs.batch.ingest_raw
 
+.PHONY: compact-l1
+compact-l1: ## Fusionne les petits fichiers Parquet des tables raw.*
+	$(COMPOSE) exec spark python3 -m jobs.batch.compact
+
 .PHONY: queries-l1
 queries-l1: ## Exécute les requêtes analytiques du §1.4 contre Trino
 	@bash scripts/queries_l1.sh

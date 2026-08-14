@@ -50,6 +50,18 @@ def test_rafale_respecte_montant_et_fenetre(index, rng):
         assert etendue <= np.timedelta64(cfg.FRAUD_BURST_WINDOW_MINUTES, "m")
 
 
+def test_rafale_ne_deborde_pas_de_la_periode(index, rng):
+    """Une rafale décale les horodatages vers l'avant : partie d'une transaction
+    proche de minuit, elle déborderait sur le lendemain. Le fichier daté du jour
+    J contiendrait alors des opérations de J+1, créant une partition Iceberg
+    parasite et contredisant la nomenclature."""
+    brut = generate(index, "bank_txn")
+    altere, rapport = ano.inject_transaction_bursts(brut, "CI", 0.10, rng)
+    assert rapport.rows > 0
+    assert altere["timestamp"].max() <= brut["timestamp"].max()
+    assert altere["timestamp"].min() >= brut["timestamp"].min()
+
+
 # --- Règle 2 : origine géographique inhabituelle -----------------------------
 
 

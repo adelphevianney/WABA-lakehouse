@@ -167,6 +167,19 @@ $before = (Invoke-TrinoSql -Sql $RawTotalSql) -replace '[^0-9]', ''
 if ([int]$before -le 0) { Stop-Smoke 'les tables raw.* sont vides' }
 Write-Ok "$before lignes ingérées, interrogeables en SQL"
 
+# Garde-fou contre le morcellement. Un fichier par jour et par pays donne des
+# partitions bien remplies ; si la génération repassait à un fichier couvrant
+# toute la période, les partitions retomberaient à quelques dizaines de lignes
+# et le stockage par ligne serait multiplié par dix.
+# La requête passe par un fichier : les guillemets exigés par les tables de
+# métadonnées Iceberg ne survivent pas au passage en ligne de commande.
+$partitionRows = (& docker @Compose exec -T trino trino --no-progress --output-format TSV `
+        -f /sql/internal/partition_health.sql 2>$null) -replace '[^0-9]', ''
+if ([int]$partitionRows -ge 100) {
+    Write-Ok "partitions saines ($partitionRows lignes par partition en moyenne)"
+}
+else { Stop-Smoke "partitionnement trop fin : $partitionRows lignes par partition" }
+
 # --- 8. Idempotence -----------------------------------------------------------
 # Critère explicite de l'énoncé. La graine étant identique, le générateur
 # reproduit exactement les mêmes identifiants : les fichiers redéposés portent

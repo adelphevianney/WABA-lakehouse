@@ -166,6 +166,16 @@ before=$(trino_sql "$RAW_TOTAL_SQL" | tr -dc '0-9')
 [ "${before:-0}" -gt 0 ] || fail "les tables raw.* sont vides"
 ok "${before} lignes ingérées, interrogeables en SQL"
 
+# Garde-fou contre le morcellement. Un fichier par jour et par pays donne des
+# partitions bien remplies ; si la génération repassait à un fichier couvrant
+# toute la période, les partitions retomberaient à quelques dizaines de lignes
+# et le stockage par ligne serait multiplié par dix.
+partition_rows=$("${COMPOSE[@]}" exec -T trino trino --no-progress --output-format TSV \
+                 -f /sql/internal/partition_health.sql 2>/dev/null | tr -dc '0-9')
+[ "${partition_rows:-0}" -ge 100 ] \
+  && ok "partitions saines (${partition_rows} lignes par partition en moyenne)" \
+  || fail "partitionnement trop fin : ${partition_rows} lignes par partition"
+
 # --- 8. Idempotence -----------------------------------------------------------
 # Critère explicite de l'énoncé. La graine étant identique, le générateur
 # reproduit exactement les mêmes identifiants : les fichiers redéposés portent
