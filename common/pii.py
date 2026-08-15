@@ -5,11 +5,20 @@ générateur (application Streamlit) et les jobs PySpark de la couche Silver.
 
 Trois primitives, trois usages :
 
-* `pseudonymize` — jeton déterministe et non réversible, calculé par HMAC-SHA256.
-  Déterministe pour rester joignable d'une table à l'autre ; à clé, pour qu'un
-  attaquant disposant du jeton et de la liste des identifiants possibles ne
-  puisse pas retrouver la valeur d'origine par force brute, ce qu'un simple
-  SHA-256 ne garantirait pas sur un espace de clés aussi petit.
+* `pseudonymize` — jeton déterministe et non réversible : SHA-256 d'une clé
+  secrète concaténée à la valeur. Déterministe pour rester joignable d'une table
+  à l'autre ; à clé, pour qu'un attaquant disposant du jeton et de la liste des
+  identifiants possibles ne puisse pas retrouver la valeur d'origine par force
+  brute, ce qu'un SHA-256 nu ne garantirait pas sur un espace aussi petit.
+
+  Un HMAC serait le choix canonique, et sa supériorité tient à sa résistance à
+  l'extension de longueur — une propriété qui protège l'authentification de
+  messages, pas la pseudonymisation d'identifiants. Le choix d'un hachage à clé
+  préfixée est ici dicté par une contrainte concrète : Spark n'expose pas de
+  fonction HMAC native, et la seule alternative serait une UDF Python faisant
+  transiter chaque ligne par l'interpréteur. Les jobs Silver reproduisent donc
+  exactement cette construction avec `sha2(concat(clé, valeur), 256)`, garantissant
+  des jetons identiques des deux côtés.
 * `mask_iban` / `mask_account_number` — masquage d'affichage, qui conserve les
   derniers caractères pour permettre à un agent de reconnaître un compte sans
   exposer la valeur complète.
@@ -23,11 +32,15 @@ documenté dans le write-up.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import os
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-import pandas as pd
+# pandas n'est importé que par les fonctions qui manipulent des Series. Les
+# primitives — clé et jeton — doivent rester utilisables depuis les jobs Spark,
+# dont l'image n'embarque pas pandas : l'y ajouter coûterait 70 Mo pour une
+# dépendance dont ces jobs n'ont aucun usage.
+if TYPE_CHECKING:  # pragma: no cover
+    import pandas as pd
 
 _FALLBACK_KEY: Final[str] = "waba-dev-only-pii-key-do-not-use-in-production"
 TOKEN_LENGTH: Final[int] = 32
@@ -46,7 +59,16 @@ def _configured_key() -> str | None:
 
 
 def _key() -> bytes:
-    return (_configured_key() or _FALLBACK_KEY).encode("utf-8")
+    return key_material().encode("utf-8")
+
+
+def key_material() -> str:
+    """Clé en clair, telle que les jobs Spark doivent l'injecter dans `concat`.
+
+    Exposée pour que les transformations Silver reconstruisent exactement le même
+    jeton sans dupliquer la logique de résolution de la clé.
+    """
+    return _configured_key() or _FALLBACK_KEY
 
 
 def is_using_fallback_key() -> bool:
@@ -59,10 +81,17 @@ def is_using_fallback_key() -> bool:
 
 
 def pseudonymize_value(value: str | None) -> str | None:
-    """Jeton déterministe pour une valeur unique. Propage les valeurs nulles."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    """Jeton déterministe pour une valeur unique. Propage les valeurs nulles.
+
+    Construction volontairement identique à celle des jobs Spark :
+    `sha2(concat(clé, valeur), 256)` tronqué. Toute divergence entre les deux
+    produirait des jetons incompatibles et casserait silencieusement les
+    jointures entre couches.
+    """
+    # `value != value` détecte un NaN sans dépendre de pandas.
+    if value is None or (isinstance(value, float) and value != value):
         return None
-    digest = hmac.new(_key(), str(value).encode("utf-8"), hashlib.sha256)
+    digest = hashlib.sha256(_key() + str(value).encode("utf-8"))
     return digest.hexdigest()[:TOKEN_LENGTH]
 
 
@@ -81,7 +110,7 @@ def mask_iban(values: pd.Series) -> pd.Series:
     Exemple : CI93CI1010010100000000000123 -> CI**********************0123
     """
     def _mask(iban: str | None) -> str | None:
-        if iban is None or pd.isna(iban):
+        if iban is None or iban != iban:
             return None
         iban = str(iban)
         if len(iban) <= 6:
@@ -94,7 +123,7 @@ def mask_iban(values: pd.Series) -> pd.Series:
 def mask_account_number(values: pd.Series) -> pd.Series:
     """Masque un numéro de compte en ne conservant que les 4 derniers chiffres."""
     def _mask(number: str | None) -> str | None:
-        if number is None or pd.isna(number):
+        if number is None or number != number:
             return None
         number = str(number)
         if len(number) <= 4:

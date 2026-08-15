@@ -46,6 +46,14 @@ down-l1: ## Arrête le Level 1 (les données sont conservées)
 ingest-l1: ## Ingère la zone d'atterrissage vers les 8 tables Iceberg raw.*
 	$(COMPOSE) exec spark python3 -m jobs.batch.ingest_raw
 
+.PHONY: bronze-views
+bronze-views: ## Crée les vues bronze.* (zone Bronze du médaillon) dans Trino
+	$(COMPOSE) exec -T trino trino --no-progress -f /sql/internal/create_bronze_views.sql
+
+.PHONY: silver-l2
+silver-l2: ## Construit les tables silver.* depuis la couche brute
+	$(COMPOSE) exec spark python3 -m jobs.batch.silver
+
 .PHONY: compact-l1
 compact-l1: ## Fusionne les petits fichiers Parquet des tables raw.*
 	$(COMPOSE) exec spark python3 -m jobs.batch.compact

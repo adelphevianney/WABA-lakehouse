@@ -10,7 +10,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'env', 'check', 'up-l1', 'down-l1', 'ingest-l1', 'compact-l1',
-        'queries-l1', 'smoke-l1', 'ps', 'logs', 'sql', 'clean')]
+        'bronze-views', 'silver-l2', 'queries-l1', 'smoke-l1', 'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
     [Parameter(Position = 1)]
@@ -97,6 +97,13 @@ switch ($Command) {
     'down-l1' { Invoke-Compose @('--profile', 'l1', 'down') }
 
     'ingest-l1' { Invoke-Compose @('exec', 'spark', 'python3', '-m', 'jobs.batch.ingest_raw') }
+
+    'bronze-views' {
+        Invoke-Compose @('exec', '-T', 'trino', 'trino', '--no-progress',
+            '-f', '/sql/internal/create_bronze_views.sql')
+    }
+
+    'silver-l2' { Invoke-Compose @('exec', 'spark', 'python3', '-m', 'jobs.batch.silver') }
 
     'compact-l1' { Invoke-Compose @('exec', 'spark', 'python3', '-m', 'jobs.batch.compact') }
 
