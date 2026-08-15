@@ -219,9 +219,136 @@ services:
     mem_limit: 3g
     networks: [waba]
 
+  # ---------------------------------------------------------------------------
+  # Level 2.1 — Orchestration
+  # ---------------------------------------------------------------------------
+  airflow-db:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: waba-airflow-db
+    profiles: ["l2", "l3", "l4"]
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER:-airflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+    networks: [waba]
+
+  # Bloc commun aux services Airflow : même image, même configuration, même
+  # accès au démon Docker.
+  airflow-init:
+    build:
+      context: ..
+      dockerfile: docker/airflow/Dockerfile
+    image: waba/airflow:${WABA_VERSION:-dev}
+    container_name: waba-airflow-init
+    profiles: ["l2", "l3", "l4"]
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Les DAGs sont déployés en pause. Démarrer la plateforme ne doit pas
+      # déclencher immédiatement toute la chaîne de traitement : l'exploitant
+      # active ce qu'il veut, quand il le veut.
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      # Chaque tâche démarre un conteneur Spark d'environ 2 Go. Sur une machine
+      # de 16 Go partagée avec MinIO, Trino et le reste de la stack, laisser
+      # Airflow en paralléliser davantage épuiserait la mémoire — les trois
+      # tâches Gold à elles seules en réclameraient 6.
+      AIRFLOW__CORE__PARALLELISM: "2"
+      AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "2"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:?}@airflow-db/airflow
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "false"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+      # Les identifiants MinIO sont déclarés comme une **Connection** Airflow,
+      # que les DAGs référencent par `{{ conn.waba_minio.login }}`. Aucun secret
+      # n'apparaît donc dans le code des DAGs, conformément au §2.1.
+      AIRFLOW_CONN_WABA_MINIO: >-
+        {"conn_type":"generic","host":"minio","port":9000,
+         "login":"${MINIO_ROOT_USER:?}","password":"${MINIO_ROOT_PASSWORD:?}"}
+      AIRFLOW_VAR_WABA_SPARK_IMAGE: waba/spark:${WABA_VERSION:-dev}
+      AIRFLOW_VAR_WABA_MINIO_ENDPOINT: http://minio:9000
+      AIRFLOW_VAR_WABA_ICEBERG_REST_URI: http://iceberg-rest:8181
+      AIRFLOW_VAR_WABA_COUNTRIES: ${WABA_COUNTRIES:-CI,SN,ML,BF,GN,TG,BJ,GH}
+      AIRFLOW_VAR_WABA_GHS_PER_EUR: ${WABA_GHS_PER_EUR:-17.5}
+      AIRFLOW_VAR_WABA_PII_KEY: ${WABA_PII_KEY:-}
+    volumes: &airflow-volumes
+      - ../airflow/dags:/opt/airflow/dags:ro
+      - airflow-logs:/opt/airflow/logs
+      # Accès au démon : c'est par ce socket qu'Airflow démarre les conteneurs
+      # Spark. Monté en lecture-écriture car lancer un conteneur est une écriture.
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        airflow db migrate
+        airflow users create --username admin --password ${AIRFLOW_ADMIN_PASSWORD:-admin} \
+          --firstname WABA --lastname Admin --role Admin --email admin@waba.local || true
+        echo "Airflow initialisé"
+    restart: "no"
+    networks: [waba]
+
+  airflow-scheduler:
+    image: waba/airflow:${WABA_VERSION:-dev}
+    container_name: waba-airflow-scheduler
+    profiles: ["l2", "l3", "l4"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-env
+    volumes: *airflow-volumes
+    # Le socket Docker appartient à root:root en 660. Ajouter le groupe root au
+    # conteneur suffit à lui en donner l'accès, sans toucher aux permissions du
+    # socket lui-même — un `chmod 666` l'ouvrirait à tout l'hôte, bien au-delà
+    # du périmètre de ce projet.
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
+    command: ["scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $${HOSTNAME}"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    mem_limit: 1500m
+    networks: [waba]
+
+  airflow-webserver:
+    image: waba/airflow:${WABA_VERSION:-dev}
+    container_name: waba-airflow-webserver
+    profiles: ["l2", "l3", "l4"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-env
+    volumes: *airflow-volumes
+    ports:
+      - "${AIRFLOW_PORT:-8090}:8080"
+    command: ["webserver"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    mem_limit: 1200m
+    networks: [waba]
+
 volumes:
   minio-data:
   iceberg-catalog:
+  airflow-db:
+  airflow-logs:
 
 networks:
   waba:

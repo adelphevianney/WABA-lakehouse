@@ -9,9 +9,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'env', 'check', 'up-l1', 'down-l1', 'ingest-l1', 'compact-l1',
-        'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1', 'smoke-l1', 'ps', 'logs',
-        'sql', 'clean')]
+    [ValidateSet('help', 'env', 'check', 'up-l1', 'down-l1', 'up-l2', 'down-l2', 'dags',
+        'ingest-l1', 'compact-l1', 'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1',
+        'smoke-l1', 'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
     [Parameter(Position = 1)]
@@ -98,6 +98,21 @@ switch ($Command) {
     'down-l1' { Invoke-Compose @('--profile', 'l1', 'down') }
 
     'ingest-l1' { Invoke-Compose @('exec', 'spark', 'python3', '-m', 'jobs.batch.ingest_raw') }
+
+    'up-l2' {
+        Initialize-Env
+        Invoke-Compose @('--profile', 'l2', 'up', '-d', '--wait', '--build')
+        Write-Host ''
+        Write-Host ("  Airflow : http://localhost:{0} (admin / {1})" -f `
+            (Get-EnvValue 'AIRFLOW_PORT' '8090'), (Get-EnvValue 'AIRFLOW_ADMIN_PASSWORD' 'admin')) -ForegroundColor Green
+    }
+
+    'down-l2' { Invoke-Compose @('--profile', 'l2', 'down') }
+
+    'dags' {
+        Invoke-Compose @('exec', '-T', 'airflow-scheduler', 'airflow', 'dags', 'list')
+        Invoke-Compose @('exec', '-T', 'airflow-scheduler', 'airflow', 'dags', 'list-import-errors')
+    }
 
     'bronze-views' {
         Invoke-Compose @('exec', '-T', 'trino', 'trino', '--no-progress',

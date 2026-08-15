@@ -48,7 +48,7 @@ flowchart LR
 | Niveau | Périmètre | État |
 |---|---|---|
 | **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | ✅ Complet — générateur, ingestion Spark, 8 tables `raw.*` idempotentes |
-| **Level 2** | Orchestration Airflow & architecture Médaillon | ⬜ À venir |
+| **Level 2** | Orchestration Airflow & architecture Médaillon | 🟡 Médaillon et 4 DAGs opérationnels — validation en cours |
 | **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | ⬜ À venir |
 | **Level 4** | Kubernetes, gouvernance & observabilité | ⬜ À venir |
 
@@ -89,6 +89,7 @@ Interfaces exposées :
 | Service | URL | Identifiants |
 |---|---|---|
 | **Générateur (Streamlit)** | http://localhost:8501 | aucun (dev local) |
+| **Airflow** (profil `l2`) | http://localhost:8090 | `admin` / cf. `.env` |
 | Console MinIO | http://localhost:9001 | ceux du `.env` |
 | Trino | http://localhost:8080 | aucun (dev local) |
 | Catalogue Iceberg REST | http://localhost:8181 | — |
@@ -223,6 +224,35 @@ Trois partis pris qui la distinguent d'un générateur aléatoire :
   respecterait la forme du nom mais éparpillerait les données sur 720 partitions Iceberg de
   quelques dizaines de lignes, multipliant par dix le stockage par ligne.
 
+## Le Level 2 : médaillon et orchestration
+
+```bash
+make up-l2     # socle + Airflow (http://localhost:8090)
+make dags      # liste les DAGs et les erreurs d'analyse
+```
+
+**Les trois zones du médaillon.** `bronze.*` et `raw.*` désignent la même zone : l'énoncé emploie
+les deux termes pour la même définition, et Bronze est exposée en vues plutôt que dupliquée.
+`silver.*` porte la donnée nettoyée, dédupliquée, convertie en euros et enrichie par les
+référentiels. `gold.*` porte les sept KPIs, plus le rapport réglementaire.
+
+**Quatre DAGs, chaînés par jeux de données.** `dag_ingest_raw` s'exécute tous les quarts d'heure et
+publie `iceberg://waba/raw` ; `dag_bronze_to_silver` s'y abonne et publie Silver ;
+`dag_silver_to_gold` s'y abonne à son tour. Décrire ce que chaque DAG produit et consomme, plutôt
+que de coder qui déclenche qui, permet d'ajouter demain un consommateur sans toucher à l'amont.
+`dag_regulatory_report` est planifié à 00h30 UTC pour la journée écoulée, avec rattrapage activé —
+une déclaration réglementaire manquée reste due.
+
+**Les jobs Spark ne s'exécutent pas dans Airflow.** Chaque tâche démarre un conteneur `waba/spark`
+éphémère via le socket Docker. Embarquer Spark dans l'image Airflow l'alourdirait d'un gigaoctet
+pour dupliquer un environnement existant ; surtout, ce découplage est celui que le Level 4 reprendra
+en remplaçant `DockerOperator` par `SparkKubernetesOperator`.
+
+**Aucun identifiant dans le code des DAGs.** Les accès MinIO sont déclarés comme une *Connection*
+Airflow et référencés par `{{ conn.waba_minio.login }}`, résolu à l'exécution de la tâche. Les
+paramètres d'environnement passent par des *Variables*. Chaque DAG accepte un paramètre `countries`
+permettant de rejouer un seul pays après correction.
+
 ## Contrainte mémoire — pourquoi des profils
 
 La plateforme complète du Level 4 dépasse 24 Go de RAM. Le développement étant mené sur une machine
@@ -268,8 +298,14 @@ swap=8GB
 │   │   ├── schemas.py   #   schémas explicites, DDL et clés d'idempotence
 │   │   ├── quality.py   #   validation et motifs de rejet
 │   │   ├── landing.py   #   recensement et archivage des fichiers
-│   │   └── ingest_raw.py#   job d'ingestion vers les 8 tables raw.*
+│   │   ├── ingest_raw.py#   ingestion vers les 8 tables raw.*
+│   │   ├── layers.py    #   socle des transformations (devise, PII, MERGE)
+│   │   ├── silver.py    #   nettoyage, conversion, enrichissement
+│   │   ├── gold.py      #   les 7 KPIs du §2.3
+│   │   ├── regulatory.py#   agrégats BCEAO et CIMA
+│   │   └── compact.py   #   fusion des petits fichiers Parquet
 │   └── streaming/       # Level 3 — Spark Structured Streaming
+├── airflow/dags/        # Level 2 — les 4 DAGs et leur socle commun
 ├── jobs/
 │   ├── batch/           # Levels 1-2 — jobs PySpark (raw -> bronze -> silver -> gold)
 │   └── streaming/       # Level 3  — jobs Spark Structured Streaming

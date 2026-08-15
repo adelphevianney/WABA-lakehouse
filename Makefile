@@ -46,6 +46,21 @@ down-l1: ## Arrête le Level 1 (les données sont conservées)
 ingest-l1: ## Ingère la zone d'atterrissage vers les 8 tables Iceberg raw.*
 	$(COMPOSE) exec spark python3 -m jobs.batch.ingest_raw
 
+.PHONY: up-l2
+up-l2: env ## Démarre le Level 2 (socle + Airflow)
+	$(COMPOSE) --profile l2 up -d --wait --build
+	@set -a && . ./.env && set +a && printf '\n  Airflow : http://localhost:%s (admin / %s)\n\n' \
+		"$$AIRFLOW_PORT" "$$AIRFLOW_ADMIN_PASSWORD"
+
+.PHONY: down-l2
+down-l2: ## Arrête le Level 2 (les données sont conservées)
+	$(COMPOSE) --profile l2 down
+
+.PHONY: dags
+dags: ## Liste les DAGs et signale les erreurs d'analyse
+	$(COMPOSE) exec -T airflow-scheduler airflow dags list
+	@$(COMPOSE) exec -T airflow-scheduler airflow dags list-import-errors
+
 .PHONY: bronze-views
 bronze-views: ## Crée les vues bronze.* (zone Bronze du médaillon) dans Trino
 	$(COMPOSE) exec -T trino trino --no-progress -f /sql/internal/create_bronze_views.sql
