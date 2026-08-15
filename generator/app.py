@@ -213,9 +213,9 @@ mode = st.radio(
     options=("one-time", "continue"),
     horizontal=True,
     format_func=lambda m: (
-        "Ponctuel — un lot immédiat"
+        "Ponctuel — toute la période, un fichier par jour"
         if m == "one-time"
-        else "Continu — un lot toutes les N secondes, simulant un flux temps réel"
+        else "Continu — flux temps réel sur le dernier jour de la période"
     ),
 )
 interval = (
@@ -283,21 +283,33 @@ else:
     # Un fichier par pays et par journée : sur un trimestre, la demande porte
     # vite sur plusieurs centaines de fichiers. L'annoncer avant de lancer évite
     # la surprise, d'autant que l'ingestion Spark devra tous les relire.
-    planned = build_request()
+    planned = build_request(single_day=(mode == "continue"))
     total_files = planned.file_count()
     total_rows = sum(
         row_counts.get(kind, cfg.DEFAULT_ROWS[kind]) * len(planned.days())
         * len(set(selected_countries) & set(service.eligible_countries(kind, tuple(selected_entities))))
         for kind in selected_kinds
     )
-    message = (
-        f"{len(planned.days())} journée(s) simulée(s) → **{total_files} fichiers**, "
-        f"environ {total_rows:,} lignes.".replace(",", " ")
-    )
-    if total_files > 200:
-        st.warning(message + " Volume important : la génération et l'ingestion prendront du temps.")
+
+    if mode == "continue":
+        # Sans cette précision, un utilisateur ayant sélectionné un trimestre
+        # s'attend à voir des fichiers couvrir toute la période, alors que le
+        # flux alimente uniquement sa journée la plus récente.
+        st.info(
+            f"Un flux temps réel alimente le jour courant : **chaque cycle dépose "
+            f"{total_files} fichiers datés du {planned.days()[0]:%d/%m/%Y}**, dernier jour "
+            f"de la période, avec un numéro de séquence incrémenté. Les autres journées "
+            f"de la période sélectionnée ne sont pas alimentées dans ce mode."
+        )
     else:
-        st.info(message)
+        message = (
+            f"{len(planned.days())} journée(s) simulée(s) → **{total_files} fichiers**, "
+            f"environ {total_rows:,} lignes.".replace(",", " ")
+        )
+        if total_files > 200:
+            st.warning(message + " Volume important : la génération et l'ingestion prendront du temps.")
+        else:
+            st.info(message)
 
 # --- Mode ponctuel -----------------------------------------------------------
 
@@ -340,7 +352,10 @@ else:
             "Lignes": sum(r.rows for r in results if r.ok),
         })
 
-        st.success(f"Flux actif — cycle {st.session_state['cycles']}")
+        st.success(
+            f"Flux actif — cycle {st.session_state['cycles']}, "
+            f"journée alimentée : {build_request(single_day=True).days()[0]:%d/%m/%Y}"
+        )
         render_results(results)
         st.dataframe(
             pd.DataFrame(st.session_state["history"][:20]),
