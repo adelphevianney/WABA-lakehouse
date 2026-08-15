@@ -84,9 +84,17 @@ compact-l1: ## Fusionne les petits fichiers Parquet des tables raw.*
 queries-l1: ## Exécute les requêtes analytiques du §1.4 contre Trino
 	@bash scripts/queries_l1.sh
 
+.PHONY: queries-l2
+queries-l2: ## Exécute les requêtes analytiques du Level 2 contre Trino
+	@bash scripts/queries_l1.sh level2
+
 .PHONY: smoke-l1
 smoke-l1: ## Vérifie de bout en bout générateur -> Spark -> Iceberg -> Trino
 	@bash scripts/smoke_l1.sh
+
+.PHONY: smoke-l2
+smoke-l2: ## Vérifie le médaillon, les 7 KPIs, les DAGs et les seuils réglementaires
+	@bash scripts/smoke_l2.sh
 
 # --- Exploitation --------------------------------------------------------------
 

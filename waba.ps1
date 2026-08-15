@@ -11,7 +11,7 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'env', 'check', 'up-l1', 'down-l1', 'up-l2', 'down-l2', 'dags',
         'ingest-l1', 'compact-l1', 'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1',
-        'smoke-l1', 'ps', 'logs', 'sql', 'clean')]
+        'smoke-l1', 'smoke-l2', 'queries-l2', 'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
     [Parameter(Position = 1)]
@@ -66,6 +66,17 @@ switch ($Command) {
         Write-Host '    compact-l1 Fusionne les petits fichiers Parquet des tables raw.*'
         Write-Host '    queries-l1 Exécute les requêtes analytiques du §1.4 contre Trino'
         Write-Host '    smoke-l1   Vérifie de bout en bout générateur -> Spark -> Iceberg -> Trino'
+        Write-Host ''
+        Write-Host '    -- Level 2 --------------------------------------------------'
+        Write-Host '    up-l2        Démarre le Level 2 (socle + Airflow)'
+        Write-Host '    down-l2      Arrête le Level 2 (données conservées)'
+        Write-Host '    dags         Liste les DAGs et les erreurs d''analyse'
+        Write-Host '    bronze-views Crée les vues bronze.* dans Trino'
+        Write-Host '    silver-l2    Construit les tables silver.*'
+        Write-Host '    gold-l2      Calcule les 7 tables de KPIs gold.*'
+        Write-Host '    queries-l2   Requêtes analytiques du Level 2'
+        Write-Host '    smoke-l2     Vérifie le médaillon, les KPIs et les DAGs'
+        Write-Host ''
         Write-Host '    ps         Consommation mémoire des conteneurs'
         Write-Host '    logs <svc> Suit les logs d''un service'
         Write-Host '    sql        Shell SQL Trino interactif'
@@ -128,6 +139,14 @@ switch ($Command) {
     'queries-l1' { & "$PSScriptRoot\scripts\queries_l1.ps1" }
 
     'smoke-l1' { & "$PSScriptRoot\scripts\smoke_l1.ps1" }
+
+    # Le test de fumée du Level 2 n'a pas d'équivalent PowerShell : il enchaîne
+    # des sondes SQL et des comparaisons de compteurs, sans les particularités
+    # d'échappement qui avaient justifié une version dédiée au Level 1. Il est
+    # invoqué via Git Bash, présent avec Git for Windows.
+    'smoke-l2' { & bash "$PSScriptRoot/scripts/smoke_l2.sh" }
+
+    'queries-l2' { & bash "$PSScriptRoot/scripts/queries_l1.sh" level2 }
 
     'ps' { docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' }
 

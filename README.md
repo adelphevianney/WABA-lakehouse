@@ -227,9 +227,18 @@ Trois partis pris qui la distinguent d'un générateur aléatoire :
 ## Le Level 2 : médaillon et orchestration
 
 ```bash
-make up-l2     # socle + Airflow (http://localhost:8090)
-make dags      # liste les DAGs et les erreurs d'analyse
+make up-l2        # socle + Airflow (http://localhost:8090)
+make medallion-l2 # construit Bronze, Silver et Gold
+make smoke-l2     # vérifie les critères du niveau
+make queries-l2   # requêtes analytiques du Level 2
 ```
+
+`make smoke-l2` construit le médaillon puis contrôle en neuf étapes : les trois zones existent avec
+des contenus distincts, les transformations Silver satisfont les quatre exigences du §2.2, les
+7 tables Gold sont requêtables et filtrables par pays, **les KPIs réglementaires tombent dans leurs
+fourchettes** (NPL 3-8 %, loss ratio 50-85 %), le rapport J+1 est produit, les 4 DAGs s'analysent
+sans erreur, aucun identifiant n'apparaît dans le code, et recalculer Silver ou Gold ne duplique
+rien.
 
 **Les trois zones du médaillon.** `bronze.*` et `raw.*` désignent la même zone : l'énoncé emploie
 les deux termes pour la même définition, et Bronze est exposée en vues plutôt que dupliquée.

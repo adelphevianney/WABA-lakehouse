@@ -23,7 +23,12 @@ export MSYS2_ARG_CONV_EXCL='*'
 
 COMPOSE=(docker compose --env-file .env -f docker/compose.yml)
 
-for file in sql/level1/*.sql; do
+# Le répertoire de requêtes est paramétrable : `queries_l1.sh level2` exécute
+# celles du Level 2. Le nom du script reste celui du premier niveau, mais son
+# mécanisme n'a rien de spécifique.
+NIVEAU="${1:-level1}"
+
+for file in "sql/${NIVEAU}"/*.sql; do
   name=$(basename "$file")
   # La première ligne de commentaire de chaque fichier sert de titre.
   title=$(head -1 "$file" | sed 's/^-- *//')
@@ -31,10 +36,10 @@ for file in sql/level1/*.sql; do
   # `-f` produit du CSV par défaut, là où `--execute` produit un tableau
   # aligné : le format est demandé explicitement pour rester lisible.
   if ! "${COMPOSE[@]}" exec -T trino trino --no-progress --output-format ALIGNED \
-       -f "/sql/level1/${name}" 2>/dev/null; then
+       -f "/sql/${NIVEAU}/${name}" 2>/dev/null; then
     printf '\033[31mÉchec de %s\033[0m\n' "$name" >&2
     exit 1
   fi
 done
 
-printf '\n\033[32m%d requêtes analytiques exécutées\033[0m\n\n' "$(ls sql/level1/*.sql | wc -l)"
+printf '\n\033[32m%d requêtes analytiques exécutées\033[0m\n\n' "$(ls "sql/${NIVEAU}"/*.sql | wc -l)"

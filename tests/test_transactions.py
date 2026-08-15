@@ -161,3 +161,29 @@ def test_filtre_par_ligne_metier(index):
         entity_types=("MICROFINANCE",),
     )
     assert set(prets["entity_type"]) == {"MICROFINANCE"}
+
+
+# --- Règles introduites au Level 2 -------------------------------------------
+
+
+def test_type_de_pret_stable_par_compte(index):
+    """Le type de prêt est une caractéristique du contrat, pas de chaque
+    échéance : sans cette stabilité, la ventilation du NPL par type de prêt
+    n'aurait aucun sens."""
+    prets = generate(index, "loan_repayments", country="ML", rows=3000)
+    types_par_compte = prets.groupby("loan_account_id")["loan_type"].nunique()
+    assert types_par_compte.max() == 1
+
+
+def test_interets_bornes_par_le_montant_paye(index):
+    """Une échéance s'impute d'abord sur les intérêts courus : on ne peut pas
+    percevoir plus d'intérêts que le montant effectivement réglé."""
+    prets = generate(index, "loan_repayments", rows=2000)
+    assert (prets["interest_amount"] >= 0).all()
+    assert (prets["interest_amount"] <= prets["amount_paid"] + 1e-6).all()
+
+
+def test_aucun_interet_sur_une_echeance_impayee(index):
+    prets = generate(index, "loan_repayments", rows=2000)
+    en_defaut = prets["repayment_status"] == "DEFAULT"
+    assert (prets.loc[en_defaut, "interest_amount"] == 0).all()

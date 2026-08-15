@@ -119,3 +119,27 @@ def test_generation_reproductible_a_graine_egale():
     second = ref.generate_all({"customers": 500, "accounts": 800}, seed=1)
     assert premier["customers"].equals(second["customers"])
     assert premier["accounts"].equals(second["accounts"])
+
+
+def test_jours_d_impaye_portes_par_les_seuls_prets(referentials):
+    """La classification prudentielle est une propriété du contrat de prêt.
+    Elle rend le NPL calculable sur tout le portefeuille, indépendamment de la
+    fenêtre d'observation des échéances."""
+    comptes = referentials["accounts"]
+    prets = comptes[comptes["account_type"] == "LOAN"]
+    autres = comptes[comptes["account_type"] != "LOAN"]
+    assert prets["days_past_due"].notna().all()
+    assert autres["days_past_due"].isna().all()
+    assert (prets["days_past_due"] >= 0).all()
+
+
+def test_taux_de_douteux_coherent_avec_la_cible(referentials):
+    from generator import calibration as calib
+
+    comptes = referentials["accounts"]
+    prets = comptes[comptes["account_type"] == "LOAN"]
+    douteux = prets["days_past_due"] > 90
+    attendu = prets["country_code"].map(calib.npl_target).mean()
+    # Tolérance large : le référentiel de test est petit, et le taux réalisé
+    # s'écarte d'autant plus de sa cible que la population est réduite.
+    assert abs(douteux.mean() - attendu) < 0.04

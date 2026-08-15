@@ -381,3 +381,95 @@ Effet du découpage journalier et de la compaction sur `raw.bank_transactions` :
 | Un fichier par journée | 24 | 24 | 700 | **43** |
 | Après 4 ingestions successives | 24 | 96 | 4 200 | 46 |
 | Après compaction | 24 | **24** | 4 200 | **40** |
+
+---
+
+## J4 — Level 2 : médaillon et orchestration
+
+### D20. Bronze exposée en vues plutôt que dupliquée
+
+**Contexte.** Le §1.3 impose des tables `raw.*` et le §2.2 décrit une zone `bronze.*`
+avec exactement la même définition. Ce sont deux noms pour une seule zone.
+
+**Décision.** `bronze.*` est un ensemble de vues sur `raw.*`. Les deux vocabulaires de
+l'énoncé fonctionnent, sans dédoubler la donnée.
+
+**Alternative écartée.** Recopier physiquement les tables : double stockage, et deux
+copies censées être identiques qui peuvent diverger.
+
+**Conséquence assumée.** Les vues sont créées **par Trino** et non par Spark : une vue
+Iceberg mémorise le dialecte SQL qui l'a produite, et Trino refuse de lire celles
+écrites par Spark — « Cannot read unsupported dialect 'spark' ». Trino étant la surface
+d'interrogation, c'est lui qui les définit.
+
+### D21. Le NPL calculé sur le contrat, pas sur les échéances
+
+**Contexte.** Calculé depuis les remboursements observés, le NPL tombait à 0,96 % en
+Côte d'Ivoire pour une cible de 5 %. La cause était mesurable : sur trois jours, seuls
+**36,9 %** des prêts ont une échéance, un prêt se remboursant mensuellement.
+
+**Décision.** La classification prudentielle est portée par le compte de prêt
+(`days_past_due`), comme dans un système bancaire central, et non reconstruite depuis
+l'historique des échéances. L'indicateur devient indépendant de la fenêtre de traitement.
+
+**Conséquence assumée.** Une colonne ajoutée au schéma A.2. C'est le prix d'un
+indicateur de stock correct : le calculer sur un flux partiel donne un chiffre plausible
+mais faux, ce qui est pire qu'une erreur visible.
+
+### D22. L'injection de fraude ne doit pas déplacer les indicateurs
+
+**Contexte.** Gonfler des sinistres à plusieurs fois la prime annuelle, pour alimenter la
+règle de fraude du Level 3, faisait passer le loss ratio de 67 % à 126-475 %. La fraude
+injectée détruisait l'indicateur qu'elle est censée côtoyer. Le défaut était invisible :
+les contrôles portaient sur les données **avant** injection.
+
+**Décision.** Le taux s'applique à la population des sinistres et non à l'ensemble du
+lot, le multiple reste juste au-dessus du seuil de la règle, et la charge supplémentaire
+est reprise sur les autres règlements **de la même branche**.
+
+**Conséquence assumée.** La compensation par branche n'est pas un détail : la mener
+globalement gonflait le ratio de la branche recevant la fraude et affaissait celui des
+autres. C'est la maille du KPI qui commande celle de la compensation. Résultat mesuré :
+38 couples pays × branche × mois sur 38 dans la fourchette 50-85 %.
+
+### D23. Airflow orchestre, il n'exécute pas
+
+**Contexte.** Les jobs Spark doivent être déclenchés par l'ordonnanceur.
+
+**Décision.** Chaque tâche démarre un conteneur `waba/spark` éphémère via le socket
+Docker, plutôt que d'exécuter Spark dans le conteneur Airflow.
+
+**Alternative écartée.** Embarquer Spark et une JVM dans l'image Airflow : près d'un
+gigaoctet pour dupliquer un environnement d'exécution existant.
+
+**Conséquence assumée.** Le conteneur Airflow a besoin d'un accès au démon Docker,
+accordé par l'ajout du groupe root au seul service concerné — un `chmod` sur le socket
+l'ouvrirait à tout l'hôte. Ce découplage est celui que le Level 4 reprendra en
+remplaçant `DockerOperator` par `SparkKubernetesOperator`.
+
+### D25. Dépendances déclarées par jeux de données
+
+**Contexte.** Les quatre DAGs s'enchaînent : ingestion, Silver, Gold, reporting.
+
+**Décision.** Le chaînage passe par des `Dataset` Airflow — chaque DAG déclare ce qu'il
+produit et ce qu'il consomme — plutôt que par des déclenchements explicites.
+
+**Conséquence assumée.** Ajouter demain un DAG consommant Silver ne demandera aucune
+modification en amont, là où un `TriggerDagRunOperator` aurait imposé de modifier le
+producteur à chaque nouveau consommateur.
+
+### D24. Trois garde-fous après avoir saturé la machine
+
+**Contexte.** Au premier déploiement, les DAGs actifs par défaut ont déclenché toute la
+chaîne, et le rapport réglementaire avec rattrapage automatique depuis une date de départ
+vieille de plusieurs mois a mis en file **139 exécutions**, chacune lançant un conteneur
+Spark. La mémoire est montée à 7,3 Go sur 9,7.
+
+**Décisions.** Les DAGs sont déployés en pause ; le parallélisme est plafonné à deux
+tâches, chaque conteneur Spark réclamant 2 Go ; le rattrapage du rapport réglementaire
+est explicite, par `airflow dags backfill` sur la période voulue.
+
+**Conséquence assumée.** Une déclaration réglementaire manquée n'est plus rattrapée
+automatiquement. C'est un compromis : la logique voudrait l'inverse, mais un rattrapage
+que l'ordonnanceur dimensionne seul est ingérable. En production, la date de départ
+serait celle de la mise en service et le rattrapage redeviendrait sans danger.
