@@ -251,6 +251,21 @@ LOAN_TYPE_COUNTRIES: Final[Dict[str, Tuple[str, ...]]] = {
 }
 REPAYMENT_STATUSES: Final[Tuple[str, ...]] = ("ON_TIME", "LATE", "DEFAULT")
 
+#: Taux d'intérêt annuels par type de prêt, ordres de grandeur observés en
+#: Afrique de l'Ouest. Le microcrédit est nettement plus cher que le crédit
+#: immobilier : coûts de distribution élevés, faibles montants, absence de
+#: garantie réelle. Ces taux servent à isoler la part d'intérêt d'une échéance,
+#: sans laquelle le revenu par client de l'énoncé — « commissions + intérêts
+#: perçus » — n'est pas calculable, l'annexe A.7 ne distinguant pas capital et
+#: intérêts dans le montant remboursé.
+LOAN_ANNUAL_RATE: Final[Dict[str, float]] = {
+    "MORTGAGE": 0.08,
+    "AGRICULTURAL": 0.10,
+    "SME": 0.12,
+    "CONSUMER": 0.18,
+    "MICROCREDIT": 0.24,
+}
+
 # =============================================================================
 # Jeux de données de la plateforme
 # =============================================================================

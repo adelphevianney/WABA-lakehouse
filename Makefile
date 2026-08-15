@@ -54,6 +54,13 @@ bronze-views: ## Crée les vues bronze.* (zone Bronze du médaillon) dans Trino
 silver-l2: ## Construit les tables silver.* depuis la couche brute
 	$(COMPOSE) exec spark python3 -m jobs.batch.silver
 
+.PHONY: gold-l2
+gold-l2: ## Calcule les 7 tables de KPIs gold.* depuis la couche Silver
+	$(COMPOSE) exec spark python3 -m jobs.batch.gold
+
+.PHONY: medallion-l2
+medallion-l2: bronze-views silver-l2 gold-l2 ## Enchaîne Bronze, Silver et Gold
+
 .PHONY: compact-l1
 compact-l1: ## Fusionne les petits fichiers Parquet des tables raw.*
 	$(COMPOSE) exec spark python3 -m jobs.batch.compact

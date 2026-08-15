@@ -41,6 +41,7 @@ _TWO64: Final[float] = float(2**64)
 
 _SALT_DEFAULT: Final[int] = 0x9E37
 _SALT_OVERDUE: Final[int] = 0x51ED
+_SALT_LOAN_TYPE: Final[int] = 0x7A3D
 
 
 def _mix64(values: np.ndarray) -> np.ndarray:
@@ -97,6 +98,18 @@ def is_defaulting_account(account_ids: pd.Series, country_codes: pd.Series) -> p
     draws = _stable_uniform(_sequence_of(account_ids, 7), _SALT_DEFAULT)
     targets = country_codes.map(npl_target).to_numpy()
     return pd.Series(draws < targets, index=account_ids.index)
+
+
+def loan_type_index(account_ids: pd.Series, choices: int) -> np.ndarray:
+    """Indice de type de prêt, stable pour un compte donné.
+
+    Le type de prêt est une caractéristique du contrat, pas de chaque échéance :
+    le tirer ligne par ligne ferait apparaître un même compte tantôt en
+    microcrédit tantôt en crédit agricole, et rendrait incalculable le NPL
+    ventilé par type de prêt.
+    """
+    draws = _stable_uniform(_sequence_of(account_ids, 7), _SALT_LOAN_TYPE)
+    return np.minimum((draws * choices).astype(int), choices - 1)
 
 
 def overdue_days_for(account_ids: pd.Series, defaulting: pd.Series) -> np.ndarray:

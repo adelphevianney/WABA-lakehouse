@@ -176,6 +176,10 @@ LOAN_REPAYMENTS = DatasetSpec(
         Column("country_code", "STRING", required=True),
         Column("amount_due", "DOUBLE"),
         Column("amount_paid", "DOUBLE"),
+        # Ajoutée au schéma A.7, qui ne distingue pas capital et intérêts dans
+        # le montant remboursé : sans cette part, le revenu par client attendu
+        # au §2.3 — « commissions + intérêts perçus » — reste incalculable.
+        Column("interest_amount", "DOUBLE"),
         Column("currency", "STRING"),
         Column("due_date", "DATE"),
         Column("payment_date", "DATE"),
@@ -189,7 +193,7 @@ LOAN_REPAYMENTS = DatasetSpec(
         "repayment_status": dom.REPAYMENT_STATUSES,
         **_COMMON_ENTITY, **_CURRENCY,
     },
-    non_negative=("amount_due", "amount_paid", "days_overdue"),
+    non_negative=("amount_due", "amount_paid", "interest_amount", "days_overdue"),
 )
 
 CUSTOMERS = DatasetSpec(
@@ -230,6 +234,10 @@ ACCOUNTS = DatasetSpec(
         Column("credit_limit", "DOUBLE"),
         Column("opened_date", "DATE"),
         Column("status", "STRING"),
+        # Classification prudentielle portée par le contrat, nulle hors prêt.
+        # Ajoutée au schéma A.2 : sans elle, le NPL ne serait calculable qu'à
+        # partir des échéances observées, donc sur une fraction du portefeuille.
+        Column("days_past_due", "INT"),
     ),
     event_time=INGESTION_TIMESTAMP,
     enums={

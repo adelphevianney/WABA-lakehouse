@@ -21,6 +21,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from generator import calibration as calib
 from generator import config as cfg
 
 # =============================================================================
@@ -358,9 +359,28 @@ def generate_accounts(
     opened_date = onboarding_days + (rng.random(n) * span).astype(int).astype("timedelta64[D]")
 
     sequence = np.arange(1, n + 1)
+    account_ids = _build_ids(countries, "A", 7)
+
+    # Jours d'impayé portés par le compte de prêt lui-même.
+    #
+    # Un système bancaire central classe ses créances au niveau du contrat, pas
+    # en recomposant l'historique de ses échéances. La distinction est décisive
+    # pour le NPL : un prêt se rembourse mensuellement, donc toute fenêtre
+    # d'observation plus courte qu'un cycle ne voit qu'une fraction du
+    # portefeuille et sous-estime le ratio. Cette colonne rend l'indicateur
+    # calculable comme un stock, indépendamment de la période observée.
+    #
+    # Le champ ne concerne que les prêts : il reste nul ailleurs.
+    days_past_due = np.full(n, np.nan)
+    is_loan = account_types == "LOAN"
+    if is_loan.any():
+        loan_ids = account_ids[is_loan].reset_index(drop=True)
+        loan_countries = pd.Series(countries[is_loan])
+        defaulting = calib.is_defaulting_account(loan_ids, loan_countries)
+        days_past_due[is_loan] = calib.overdue_days_for(loan_ids, defaulting)
 
     return pd.DataFrame({
-        "account_id": _build_ids(countries, "A", 7),
+        "account_id": account_ids,
         "customer_id": customers["customer_id"].to_numpy()[owner_idx],
         "country_code": countries,
         "entity_type": entities,
@@ -374,6 +394,7 @@ def generate_accounts(
         "status": rng.choice(
             np.array(cfg.ACCOUNT_STATUSES), size=n, p=np.array(cfg.ACCOUNT_STATUS_WEIGHTS)
         ),
+        "days_past_due": days_past_due,
     })
 
 

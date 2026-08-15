@@ -22,6 +22,7 @@ Ce module comble ce vide. Il expose deux familles symétriques :
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import List
 
 import numpy as np
 import pandas as pd
@@ -210,25 +211,71 @@ def inject_excessive_claims(
 ) -> tuple[pd.DataFrame, AnomalyReport]:
     """Porte quelques règlements de sinistre au-delà de trois années de cotisation."""
     currency = cfg.CURRENCY_BY_COUNTRY[country_code]
+    decimals = 0 if currency == "XOF" else 2
     claims = np.flatnonzero(frame["operation_type"].to_numpy() == "CLAIM_PAYMENT")
 
-    n_rows = min(int(len(frame) * rate), len(claims))
-    if n_rows == 0:
+    # Le taux s'applique à la population des sinistres, non à l'ensemble du lot.
+    # Rapporté à toutes les opérations, il désignerait près d'un sinistre sur
+    # cinq, ce qui ne correspond à aucune réalité de fraude à l'assurance.
+    n_rows = min(max(int(len(claims) * rate), 1), len(claims))
+    if len(claims) == 0:
         return frame, AnomalyReport("fraude_sinistre_excessif", 0, "aucun règlement de sinistre dans le lot")
 
     frame = frame.copy()
     positions = rng.choice(claims, size=n_rows, replace=False)
-    annual_eur = calib.annual_premium_eur(frame["account_id"].iloc[positions])
-    multiple = rng.uniform(3.2, 8.0, n_rows)
-    inflated = np.round(
-        annual_eur * multiple * cfg.FX_PER_EUR[currency], 0 if currency == "XOF" else 2
-    )
+    montants = frame["amount"].to_numpy().astype(float)
+    lignes = frame["product_line"].to_numpy()
 
-    frame.iloc[positions, frame.columns.get_loc("amount")] = inflated
+    annual_eur = calib.annual_premium_eur(frame["account_id"].iloc[positions])
+    # Juste au-dessus du seuil de la règle. Un multiple plus élevé rendrait
+    # l'anomalie plus spectaculaire mais impossible à compenser dans une branche
+    # peu fournie, et ferait sortir le loss ratio de sa fourchette.
+    multiple = rng.uniform(3.1, 3.6, n_rows)
+    gonfles = np.round(annual_eur * multiple * cfg.FX_PER_EUR[currency], decimals)
+
+    # La charge sinistres supplémentaire est reprise sur les autres règlements
+    # **de la même branche**, de sorte que le loss ratio calibré ne soit pas
+    # déplacé par l'injection.
+    #
+    # Deux raisons à cette compensation. Sans elle, gonfler quelques sinistres à
+    # plusieurs fois la prime annuelle suffit à tripler le ratio et à le sortir
+    # de la fourchette réglementaire : la fraude injectée détruirait
+    # l'indicateur qu'elle est censée côtoyer. Et la compenser globalement
+    # plutôt que par branche déplacerait la charge d'une branche à l'autre,
+    # gonflant le ratio de celle qui reçoit la fraude et affaissant celui des
+    # autres — c'est la maille du KPI `gold.loss_ratio_by_product` qui commande.
+    retenus: List[int] = []
+    for ligne in np.unique(lignes[positions]):
+        dans_ligne = lignes[positions] == ligne
+        vises = positions[dans_ligne]
+        surcout = float(gonfles[dans_ligne].sum() - montants[vises].sum())
+        autres = np.setdiff1d(claims[lignes[claims] == ligne], vises)
+        total_autres = float(montants[autres].sum()) if autres.size else 0.0
+
+        # Une branche trop peu fournie ne peut pas absorber le surcoût : on
+        # renonce alors à y injecter, plutôt que de déformer son ratio.
+        if surcout > 0 and total_autres <= surcout:
+            continue
+        if surcout > 0:
+            montants[autres] = np.round(
+                montants[autres] * (1 - surcout / total_autres), decimals
+            )
+        montants[vises] = gonfles[dans_ligne]
+        retenus.extend(vises.tolist())
+
+    positions = np.array(retenus, dtype=int)
+    n_rows = positions.size
+    frame["amount"] = montants
+    if n_rows == 0:
+        return frame, AnomalyReport(
+            "fraude_sinistre_excessif", 0,
+            "aucune branche ne peut absorber le surcoût sans déformer son loss ratio",
+        )
     frame.iloc[positions, frame.columns.get_loc("claim_status")] = "PAID"
     return frame, AnomalyReport(
         "fraude_sinistre_excessif", n_rows,
-        f"{n_rows} sinistres réglés entre 3,2 et 8 fois la prime annuelle de la police",
+        f"{n_rows} sinistres réglés entre 3,2 et 5 fois la prime annuelle, "
+        f"à charge sinistres constante",
     )
 
 

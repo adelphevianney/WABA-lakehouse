@@ -442,8 +442,10 @@ def generate_loan_repayments(
     payment_date = due_date + days_overdue.astype("timedelta64[D]")
     payment_date = np.where(in_default, np.datetime64("NaT"), payment_date)
 
-    # Le type de prêt doit rester cohérent avec l'entité porteuse : le
-    # microcrédit et le crédit agricole relèvent de WABA Microfinance.
+    # Le type de prêt doit rester cohérent avec l'entité porteuse — le
+    # microcrédit et le crédit agricole relèvent de WABA Microfinance — et
+    # surtout rester stable pour un même compte : c'est une caractéristique du
+    # contrat, pas de chaque échéance.
     entities = loans["entity_type"].to_numpy()
     loan_types = np.empty(n_rows, dtype=object)
     for entity in np.unique(entities):
@@ -455,7 +457,15 @@ def generate_loan_repayments(
         ]
         if not eligible:
             eligible = [t for t in cfg.LOAN_TYPES if country_code in cfg.LOAN_TYPE_COUNTRIES[t]]
-        loan_types[mask] = rng.choice(np.array(eligible), size=int(mask.sum()))
+        indices = calib.loan_type_index(loans.loc[mask, "account_id"], len(eligible))
+        loan_types[mask] = np.array(eligible)[indices]
+
+    # Part d'intérêt réellement encaissée. Une échéance s'impute d'abord sur les
+    # intérêts courus, puis sur le capital : on ne peut donc pas percevoir plus
+    # d'intérêts que le montant effectivement payé.
+    annual_rate = np.array([cfg.LOAN_ANNUAL_RATE[t] for t in loan_types])
+    interet_du = loans["balance"].to_numpy() * annual_rate / 12.0
+    interest_amount = _round_currency(np.minimum(interet_du, amount_paid), currency)
 
     return pd.DataFrame({
         "repayment_id": _uuids(n_rows, rng),
@@ -465,6 +475,9 @@ def generate_loan_repayments(
         "country_code": country_code,
         "amount_due": amount_due,
         "amount_paid": amount_paid,
+        # Colonne ajoutée au schéma A.7 : sans elle, le revenu par client de
+        # l'énoncé — « commissions + intérêts perçus » — n'est pas calculable.
+        "interest_amount": interest_amount,
         "currency": currency,
         "due_date": due_date,
         "payment_date": payment_date,

@@ -140,6 +140,11 @@ def build_accounts(spark: SparkSession, countries: Optional[List[str]]) -> DataF
             F.col("status"),
             F.col("customer_segment"),
             F.col("customer_kyc"),
+            F.col("days_past_due"),
+            # Classification prudentielle : au-delà de 90 jours d'impayé, la
+            # créance est douteuse. Portée par le contrat, elle rend le NPL
+            # calculable sur l'intégralité du portefeuille.
+            (F.col("days_past_due") > F.lit(dom.NPL_OVERDUE_DAYS)).alias("est_douteux"),
             (F.col("account_type") == F.lit("LOAN")).alias("est_pret"),
             # Un compte clos ou dormant fausse les moyennes d'encours : le
             # signaler permet de l'exclure explicitement en aval.
@@ -362,8 +367,11 @@ def build_loan_repayments(spark: SparkSession, countries: Optional[List[str]]) -
             F.col("currency"),
             F.col("amount_due"),
             F.col("amount_paid"),
+            F.col("interest_amount"),
             layers.to_eur(F.col("amount_due"), F.col("currency")).alias("amount_due_eur"),
             layers.to_eur(F.col("amount_paid"), F.col("currency")).alias("amount_paid_eur"),
+            # Revenu d'intérêt du groupe, composante du revenu par client.
+            layers.to_eur(F.col("interest_amount"), F.col("currency")).alias("interest_amount_eur"),
             layers.to_eur(F.col("encours"), F.col("account_currency")).alias("encours_eur"),
             F.col("due_date"),
             # Null métier : une échéance impayée n'a pas de date de paiement.

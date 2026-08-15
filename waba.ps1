@@ -10,7 +10,8 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'env', 'check', 'up-l1', 'down-l1', 'ingest-l1', 'compact-l1',
-        'bronze-views', 'silver-l2', 'queries-l1', 'smoke-l1', 'ps', 'logs', 'sql', 'clean')]
+        'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1', 'smoke-l1', 'ps', 'logs',
+        'sql', 'clean')]
     [string]$Command = 'help',
 
     [Parameter(Position = 1)]
@@ -104,6 +105,8 @@ switch ($Command) {
     }
 
     'silver-l2' { Invoke-Compose @('exec', 'spark', 'python3', '-m', 'jobs.batch.silver') }
+
+    'gold-l2' { Invoke-Compose @('exec', 'spark', 'python3', '-m', 'jobs.batch.gold') }
 
     'compact-l1' { Invoke-Compose @('exec', 'spark', 'python3', '-m', 'jobs.batch.compact') }
 

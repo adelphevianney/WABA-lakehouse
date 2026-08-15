@@ -39,6 +39,7 @@ from common.domain import (  # noqa: F401
     GHS_PER_EUR,
     INSURANCE_OPERATIONS,
     KYC_LEVELS,
+    LOAN_ANNUAL_RATE,
     LOAN_TYPE_COUNTRIES,
     LOAN_TYPES,
     LOSS_RATIO_ALERT,

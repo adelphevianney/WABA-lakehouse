@@ -152,7 +152,7 @@ def merge(
     frame: DataFrame,
     table: str,
     namespace: str,
-    key: str,
+    key,
     partitioning: str,
     partition_key: Optional[str] = "country_code",
 ) -> int:
@@ -172,9 +172,13 @@ def merge(
     view = "source_{}_{}".format(namespace, table)
     frame.createOrReplaceTempView(view)
 
-    condition = "t.{key} = s.{key}".format(key=key)
-    if partition_key:
-        condition += " AND t.{pk} = s.{pk}".format(pk=partition_key)
+    # Une table Gold est un agrégat : sa clé est la maille de restitution, donc
+    # composée de plusieurs colonnes. Une table Silver a une clé naturelle
+    # unique. Les deux cas passent par le même appariement.
+    keys = [key] if isinstance(key, str) else list(key)
+    if partition_key and partition_key not in keys:
+        keys.append(partition_key)
+    condition = " AND ".join("t.{k} = s.{k}".format(k=k) for k in keys)
 
     spark.sql(
         "MERGE INTO {identifier} AS t\nUSING {view} AS s\n  ON {condition}\n"
