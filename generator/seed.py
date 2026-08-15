@@ -36,8 +36,14 @@ logger = logging.getLogger("generator.seed")
 #: volume de démonstration sur un trimestre produirait quelques dizaines de
 #: lignes par jour, une volumétrie qu'aucune banque ne connaît, et autant de
 #: partitions Iceberg quasi vides.
+#: Le référentiel de démonstration ne peut pas être arbitrairement petit. Le NPL
+#: étant pondéré par les encours, il lui faut quelques milliers de prêts par pays
+#: pour converger vers sa cible : mesuré sur 6 graines, un référentiel de 35 000
+#: comptes plaçait la moitié des pays hors de la fourchette réglementaire 3-8 %,
+#: contre aucun à 250 000 comptes. Une démonstration dont l'indicateur phare
+#: sort de sa fourchette ne démontre rien.
 PRESETS: dict[str, dict[str, int]] = {
-    "demo": {"customers": 20_000, "accounts": 35_000, "branches": 200, "products": 50,
+    "demo": {"customers": 150_000, "accounts": 250_000, "branches": 200, "products": 50,
              "rows": 700, "days": 3},
     "full": {**cfg.REFERENTIAL_SIZES, "rows": 0, "days": 90},
 }

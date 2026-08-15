@@ -305,6 +305,48 @@ partie d'une transaction proche de minuit, débordait sur le lendemain. Cinq lig
 fichier daté du 31 mars portaient un horodatage du 1er avril, créant deux partitions
 parasites. Le point de départ d'une rafale est désormais borné, et un test le vérifie.
 
+### D18. Volumétrie minimale du référentiel de démonstration
+
+**Contexte.** Le NPL est pondéré par les encours, dont la distribution lognormale est
+très dispersée. Sur un référentiel de 35 000 comptes, soit quelques centaines de prêts
+par pays, deux ou trois gros défauts déplacent le ratio de plusieurs points : mesuré sur
+six graines, **la moitié des pays sortait de la fourchette réglementaire 3-8 %**.
+
+**Décision.** Le préréglage `demo` passe à 250 000 comptes, et la marge de sécurité des
+cibles de 0,006 à 0,010. Mesuré sur 48 combinaisons (6 graines × 8 pays) : **aucun pays
+hors fourchette**, NPL réalisé entre 3,24 % et 7,09 %. Un référentiel de 400 000 comptes
+n'apportait pas de fiabilité supplémentaire pour 60 % de données en plus.
+
+**Conséquence assumée.** Le test de fumée passe d'environ 150 à 234 secondes. Une
+démonstration dont l'indicateur phare sort de sa fourchette ne démontre rien : le coût
+est justifié.
+
+### D19. Le NPL est un indicateur de stock, pas de flux — à trancher au Level 2
+
+**Constat.** Calculé en SQL depuis les remboursements observés sur trois jours, le NPL
+retombe entre 1,06 % et 3,44 %, sous la fourchette — alors que la calibration au niveau
+des comptes, elle, est conforme. La cause n'est pas la calibration mais **la fenêtre
+d'observation** : seuls **36,9 %** des prêts du portefeuille ont une échéance dans ces
+trois jours.
+
+Ce n'est pas un artefact de simulation, c'est la réalité métier : un prêt est remboursé
+par échéances mensuelles, donc trois jours n'en font apparaître qu'une fraction. Un prêt
+en défaut dont l'échéance tombe le 15 est invisible dans un fichier du 3.
+
+**Ce que cela implique.** Le NPL est un **indicateur de stock**, mesuré sur l'intégralité
+du portefeuille à une date donnée, et non un ratio calculé sur le flux d'une période
+courte. Le job Gold du Level 2 devra donc :
+
+* prendre pour dénominateur **tous** les comptes de prêt du référentiel, pas seulement
+  ceux vus dans la période ;
+* déterminer le statut de chaque prêt sur un historique suffisamment long — au moins un
+  cycle d'échéances, soit un mois — plutôt que sur la seule fenêtre de traitement ;
+* considérer comme sain, faute d'élément contraire, un prêt sans impayé observé.
+
+**Décision reportée.** Corriger cela maintenant reviendrait à écrire la logique Gold
+avant la couche Silver dont elle dépend. Le point est consigné ici pour être traité à sa
+place, lors de la conception de `gold.npl_ratio_by_country`.
+
 Budget mémoire relevé sur la machine de développement (Docker plafonné à 9,7 Go) :
 
 | Niveau | Services | `mem_limit` cumulée | Consommation mesurée |

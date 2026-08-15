@@ -122,11 +122,15 @@ MOBILE_STATUS_WEIGHTS: Final[tuple[float, ...]] = (0.94, 0.04, 0.02)
 NPL_TARGET_RANGE: Final[tuple[float, float]] = (0.03, 0.08)
 LOSS_RATIO_TARGET_RANGE: Final[tuple[float, float]] = (0.50, 0.85)
 
-# Le NPL réalisé est pondéré par les encours : il s'écarte de sa cible de
-# quelques dixièmes de point, les comptes tirés en défaut n'ayant pas exactement
-# le solde moyen du portefeuille. Viser l'intérieur de la fourchette absorbe
-# cette dispersion et garantit que l'indicateur mesuré reste conforme.
-NPL_SAMPLING_MARGIN: Final[float] = 0.006
+# Le NPL réalisé est pondéré par les encours, dont la distribution lognormale
+# est très dispersée : quelques gros prêts en défaut déplacent le ratio de
+# plusieurs dixièmes de point. Viser l'intérieur de la fourchette absorbe cette
+# dispersion et garantit que l'indicateur mesuré reste conforme.
+#
+# Valeur retenue après mesure sur 48 combinaisons (6 graines x 8 pays) : à
+# 0,006 un pays sortait encore de la fourchette sur un référentiel de 250 000
+# comptes, à 0,010 aucun.
+NPL_SAMPLING_MARGIN: Final[float] = 0.010
 
 # Part des opérations volontairement anormales, par défaut. Sans injection
 # explicite, aucune des trois règles de fraude du Level 3 ne se déclencherait

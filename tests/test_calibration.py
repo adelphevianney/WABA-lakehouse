@@ -17,6 +17,16 @@ def test_cible_npl_dans_la_fourchette_exigee():
         assert bas < cible < haut
 
 
+def test_cible_npl_respecte_la_marge_de_securite():
+    """Le NPL réalisé s'écarte de sa cible : viser les bords de la fourchette
+    ferait sortir certains pays. Les cibles doivent rester à l'intérieur."""
+    bas, haut = cfg.NPL_TARGET_RANGE
+    marge = cfg.NPL_SAMPLING_MARGIN
+    assert marge > 0
+    for country in cfg.COUNTRY_CODES:
+        assert bas + marge <= calib.npl_target(country) <= haut - marge
+
+
 def test_cibles_npl_differenciees_entre_pays():
     """Une cible unique donnerait huit pastilles identiques au tableau de bord."""
     cibles = {calib.npl_target(c) for c in cfg.COUNTRY_CODES}
