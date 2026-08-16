@@ -344,11 +344,122 @@ services:
     mem_limit: 1200m
     networks: [waba]
 
+  # ---------------------------------------------------------------------------
+  # Level 3.2 — Bus de messages
+  # ---------------------------------------------------------------------------
+  # Kafka en mode KRaft : le broker assure lui-même le rôle de contrôleur, ce
+  # que l'énoncé autorise explicitement. Zookeeper aurait ajouté un service et
+  # environ 500 Mo pour une coordination dont un broker unique n'a pas besoin.
+  kafka:
+    image: ${KAFKA_IMAGE:-apache/kafka:3.9.0}
+    container_name: waba-kafka
+    profiles: ["l3", "l4"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Un broker unique ne peut pas répliquer : tout facteur supérieur à 1
+      # laisserait les topics internes en attente d'une réplique inexistante.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Tas plafonné : le défaut de Kafka vise un broker de production, alors
+      # que la mémoire est ici la ressource contrainte du niveau.
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    mem_limit: 1g
+    networks: [waba]
+
+  # Création idempotente des topics du §3.2. Conteneur one-shot.
+  kafka-init:
+    image: ${KAFKA_IMAGE:-apache/kafka:3.9.0}
+    container_name: waba-kafka-init
+    profiles: ["l3", "l4"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        for topic in ${KAFKA_TOPICS:-raw-bank-transactions raw-insurance-operations raw-mobile-money-payments raw-loan-repayments silver-bank-transactions silver-insurance-operations silver-mobile-money gold-fraud-alerts gold-aml-events gold-liquidity-alerts dlq-financial-events}; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+            --create --if-not-exists --topic "$$topic" \
+            --partitions ${KAFKA_PARTITIONS:-3} --replication-factor 1
+        done
+        echo "--- Topics WABA ---"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
+    restart: "no"
+    networks: [waba]
+
+  # ---------------------------------------------------------------------------
+  # Level 3.1 — Ingestion temps réel
+  # ---------------------------------------------------------------------------
+  nifi:
+    image: ${NIFI_IMAGE:-apache/nifi:2.2.0}
+    container_name: waba-nifi
+    profiles: ["l3", "l4"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      # NiFi 2 a supprimé l'écoute HTTP en clair : le serveur démarre en HTTPS
+      # avec un certificat auto-signé et une authentification mono-utilisateur,
+      # quoi qu'on configure. Plutôt que de rétrograder en 1.x pour contourner
+      # cette contrainte, le script de construction du flux s'authentifie et
+      # présente un jeton — ce qui est de toute façon le comportement attendu
+      # d'un client d'API.
+      SINGLE_USER_CREDENTIALS_USERNAME: ${NIFI_USERNAME:-waba_admin}
+      SINGLE_USER_CREDENTIALS_PASSWORD: ${NIFI_PASSWORD:?le mot de passe NiFi doit faire au moins 12 caractères}
+      # Sans cela, NiFi se lie au nom d'hôte du conteneur : ni la sonde de santé
+      # sur localhost, ni la publication du port depuis l'hôte n'aboutissent.
+      NIFI_WEB_HTTPS_HOST: "0.0.0.0"
+      NIFI_WEB_PROXY_HOST: "localhost:${NIFI_PORT:-8091},nifi:8443"
+      # Tas plafonné : NiFi réserve 2 Go par défaut, ce que le budget mémoire du
+      # niveau ne permet pas.
+      NIFI_JVM_HEAP_INIT: 512m
+      NIFI_JVM_HEAP_MAX: 1g
+      # Les identifiants MinIO sont fournis au flux par variables, jamais
+      # inscrits dans sa définition.
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+    ports:
+      - "${NIFI_PORT:-8091}:8443"
+    healthcheck:
+      # `-k` accepte le certificat auto-signé généré au démarrage ; un code 401
+      # atteste que le serveur répond, l'authentification étant faite ensuite.
+      test: ["CMD-SHELL", "curl -k -s -o /dev/null -w '%{http_code}' https://localhost:8443/nifi-api/access | grep -qE '200|401'"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    mem_limit: 2g
+    networks: [waba]
+
 volumes:
   minio-data:
   iceberg-catalog:
   airflow-db:
   airflow-logs:
+  kafka-data:
 
 networks:
   waba:

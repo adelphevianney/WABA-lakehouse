@@ -22,6 +22,12 @@ FROM apache/spark:3.5.6-python3
 ARG ICEBERG_VERSION=1.9.1
 ARG HADOOP_AWS_VERSION=3.3.4
 ARG AWS_SDK_VERSION=1.12.262
+# Connecteur Kafka du Level 3. Sa version doit suivre exactement celle de Spark ;
+# kafka-clients et commons-pool2 sont ses dépendances transitives, absentes de
+# l'image et sans lesquelles le connecteur échoue au premier micro-lot.
+ARG SPARK_VERSION=3.5.6
+ARG KAFKA_CLIENTS_VERSION=3.4.1
+ARG COMMONS_POOL_VERSION=2.11.1
 
 USER root
 
@@ -31,7 +37,11 @@ RUN set -eux; \
     curl -fsSLO "${MAVEN_BASE}/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/${ICEBERG_VERSION}/iceberg-spark-runtime-3.5_2.12-${ICEBERG_VERSION}.jar"; \
     curl -fsSLO "${MAVEN_BASE}/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar"; \
     curl -fsSLO "${MAVEN_BASE}/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar"; \
-    curl -fsSLO "${MAVEN_BASE}/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar"
+    curl -fsSLO "${MAVEN_BASE}/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar"; \
+    curl -fsSLO "${MAVEN_BASE}/org/apache/spark/spark-sql-kafka-0-10_2.12/${SPARK_VERSION}/spark-sql-kafka-0-10_2.12-${SPARK_VERSION}.jar"; \
+    curl -fsSLO "${MAVEN_BASE}/org/apache/spark/spark-token-provider-kafka-0-10_2.12/${SPARK_VERSION}/spark-token-provider-kafka-0-10_2.12-${SPARK_VERSION}.jar"; \
+    curl -fsSLO "${MAVEN_BASE}/org/apache/kafka/kafka-clients/${KAFKA_CLIENTS_VERSION}/kafka-clients-${KAFKA_CLIENTS_VERSION}.jar"; \
+    curl -fsSLO "${MAVEN_BASE}/org/apache/commons/commons-pool2/${COMMONS_POOL_VERSION}/commons-pool2-${COMMONS_POOL_VERSION}.jar"
 
 # boto3 sert au recensement et à l'archivage des fichiers : ce sont des
 # opérations sur des objets, pas sur des données, et les confier à Spark

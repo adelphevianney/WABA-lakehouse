@@ -290,3 +290,46 @@ REFERENTIALS: Final[Dict[str, Dict[str, str]]] = {
 RAW_TABLES: Final[Tuple[str, ...]] = tuple(
     spec["table"] for spec in list(DATASETS.values()) + list(REFERENTIALS.values())
 )
+
+# =============================================================================
+# Bus de messages (Level 3)
+# =============================================================================
+# Les noms de topics sont déclarés ici plutôt que répétés dans le flux NiFi, le
+# script de création et les jobs streaming : une divergence entre producteur et
+# consommateur ne se manifesterait que par un topic vide, sans erreur.
+
+#: Jeu de données -> topic de la couche brute (§3.1).
+RAW_TOPICS: Final[Dict[str, str]] = {
+    "bank_txn": "raw-bank-transactions",
+    "insurance_ops": "raw-insurance-operations",
+    "mobile_money": "raw-mobile-money-payments",
+    "loan_repayments": "raw-loan-repayments",
+}
+
+#: Topics de la couche Silver, alimentés par le premier job de streaming.
+#: Les remboursements de crédit n'en ont pas : l'énoncé n'en prévoit que trois.
+SILVER_TOPICS: Final[Dict[str, str]] = {
+    "bank_txn": "silver-bank-transactions",
+    "insurance_ops": "silver-insurance-operations",
+    "mobile_money": "silver-mobile-money",
+}
+
+#: Topics d'alerte, alimentés par le second job de streaming (§3.3).
+GOLD_FRAUD_TOPIC: Final[str] = "gold-fraud-alerts"
+GOLD_AML_TOPIC: Final[str] = "gold-aml-events"
+GOLD_LIQUIDITY_TOPIC: Final[str] = "gold-liquidity-alerts"
+
+#: File de rebut. Un message illisible y est conservé avec son motif, plutôt
+#: que d'être silencieusement écarté — l'énoncé insiste sur ce point.
+DLQ_TOPIC: Final[str] = "dlq-financial-events"
+
+KAFKA_TOPICS: Final[Tuple[str, ...]] = (
+    tuple(RAW_TOPICS.values())
+    + tuple(SILVER_TOPICS.values())
+    + (GOLD_FRAUD_TOPIC, GOLD_AML_TOPIC, GOLD_LIQUIDITY_TOPIC, DLQ_TOPIC)
+)
+
+#: Seuil de couverture de liquidité : une alerte est émise lorsque les sorties
+#: nettes d'un pays sur la fenêtre dépassent cette part de ses encours. L'énoncé
+#: parle d'un « seuil de couverture minimal fixé par la BCEAO » sans le chiffrer.
+LIQUIDITY_OUTFLOW_RATIO: Final[float] = 0.02
