@@ -473,3 +473,79 @@ est explicite, par `airflow dags backfill` sur la période voulue.
 automatiquement. C'est un compromis : la logique voudrait l'inverse, mais un rattrapage
 que l'ordonnanceur dimensionne seul est ingérable. En production, la date de départ
 serait celle de la mise en service et le rattrapage redeviendrait sans danger.
+
+### D26. Le flux NiFi est construit par script, jamais exporté
+
+**Contexte.** Un flux NiFi se conçoit à la souris. Le réflexe est ensuite d'exporter le
+canevas et de verser le fichier au dépôt.
+
+**Décision.** Le flux est construit par appels à l'API REST, dans
+[`scripts/nifi_flow.py`](../scripts/nifi_flow.py). Une seule commande le détruit et le
+reconstruit à l'identique.
+
+**Alternative écartée.** Le template exporté : plusieurs milliers de lignes de XML ou de
+JSON générés, où l'ajout d'un processeur produit un diff illisible et où les identifiants
+techniques changent à chaque export. Impossible à relire en revue, impossible à comparer
+d'une version à l'autre.
+
+**Conséquence assumée.** Modifier le flux depuis l'interface web est possible mais sans
+lendemain : la reconstruction écrase la modification. C'est le prix de la reproductibilité,
+et c'est le même contrat que pour l'infrastructure décrite en code. En contrepartie, les
+noms de topics ne sont pas recopiés dans le flux : ils sont lus dans `common.domain`, la
+même source que les jobs Spark qui les consomment. Une divergence entre producteur et
+consommateur ne se serait manifestée que par un topic vide, sans erreur.
+
+### D27. Schéma dérivé de l'en-tête plutôt qu'inféré
+
+**Contexte.** Le lecteur CSV du flux offre l'inférence de schéma : elle devine le type de
+chaque colonne, ce qui produit un JSON typé sans écrire un seul schéma. Un fichier
+volontairement corrompu a montré ce que cela coûte. `SplitRecord` ne l'a pas routé vers
+sa relation d'échec : l'inférence parcourt le fichier entier avant de produire le premier
+enregistrement, et l'exception qu'elle lève à ce moment échappe au traitement d'erreur du
+processeur. Le lot est annulé, remis en file, rejoué — indéfiniment. Un seul fichier
+illisible bloquait toute l'ingestion, et rien n'atteignait jamais la file de rebut.
+
+**Décision.** Le schéma est dérivé de l'en-tête. Le lecteur se construit sans lire le
+corps du fichier, l'erreur survient là où le processeur la gère, et le fichier part vers
+`dlq-financial-events` avec son motif de rejet en en-tête de message.
+
+**Conséquence assumée.** Tous les champs arrivent en texte dans Kafka ; le typage revient
+à la couche Silver. C'est cohérent avec la chaîne batch, où les schémas sont explicites et
+jamais devinés — et cela supprime au passage un défaut plus discret : un montant inféré en
+entier dans un fichier et en décimal dans le suivant aurait produit deux schémas pour un
+même topic.
+
+### D28. Le broker n'est pas une file de rebut
+
+**Contexte.** Un producteur Kafka peut échouer pour deux raisons sans rapport : la donnée
+est illisible, ou le broker est indisponible. Les traiter pareillement conduit à déverser
+dans la file de rebut des messages parfaitement valides, le jour où Kafka redémarre.
+
+**Décision.** Les deux chemins sont distincts. Un fichier illisible part vers
+`dlq-financial-events` avec son contenu et son motif. Un broker injoignable déclenche une
+annulation de lot : rien n'est publié, rien n'est perdu, la file d'entrée se remplit.
+
+**Conséquence assumée.** C'est la contre-pression qui prend le relais. Les seuils sont
+calibrés en escalier — 500 objets devant le producteur, 200 devant le téléchargement — de
+sorte que la saturation remonte jusqu'au recensement, qui cesse de lister. Les fichiers non
+traités restent dans MinIO, et le rattrapage est automatique au rétablissement. Le flux
+n'absorbe jamais plus que ce que le broker écoule, ce qui est précisément l'inverse du
+comportement par défaut (10 000 objets, 1 Go).
+
+### D29. Les messages sont partitionnés par pays
+
+**Contexte.** Kafka ne garantit l'ordre qu'à l'intérieur d'une partition. Sans clé, les
+messages sont répartis au hasard et l'ordre des événements d'un même compte est perdu.
+
+**Décision.** La clé du message est le `country_code`, présent dans les quatre jeux de
+données.
+
+**Alternative écartée.** L'`account_id`, qui donnerait une garantie plus fine. Mais les
+règles du §3.3 — rafales de transactions, seuil AML, couverture de liquidité — s'évaluent
+sur des fenêtres par pays, et une clé plus fine disperserait sur toutes les partitions les
+événements que ces fenêtres doivent rassembler.
+
+**Conséquence assumée.** Huit pays pour trois partitions : la répartition est inégale, et
+la Côte d'Ivoire pèsera plus lourd que le Togo. Sur un broker unique, cela n'a pas de
+conséquence ; en production, le nombre de partitions se dimensionnerait sur la volumétrie
+du plus gros pays.

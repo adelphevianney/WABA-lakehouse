@@ -96,6 +96,37 @@ smoke-l1: ## Vérifie de bout en bout générateur -> Spark -> Iceberg -> Trino
 smoke-l2: ## Vérifie le médaillon, les 7 KPIs, les DAGs et les seuils réglementaires
 	@bash scripts/smoke_l2.sh
 
+# --- Level 3 : streaming -------------------------------------------------------
+
+.PHONY: up-l3
+up-l3: env ## Démarre le Level 3 (socle + Airflow + Kafka + NiFi)
+	$(COMPOSE) --profile l3 up -d --wait --build
+	@echo ""
+	@echo "  NiFi : https://localhost:$${NIFI_PORT:-8091}/nifi — certificat auto-signé"
+
+.PHONY: down-l3
+down-l3: ## Arrête le Level 3 (les données sont conservées)
+	$(COMPOSE) --profile l3 down
+
+# Le flux est construit depuis la machine hôte par l'API REST de NiFi ; le
+# script n'utilise que la bibliothèque standard, il n'y a rien à installer.
+.PHONY: nifi-flow
+nifi-flow: ## (Re)construit et démarre le flux d'ingestion NiFi vers Kafka
+	@python3 scripts/nifi_flow.py
+
+.PHONY: nifi-status
+nifi-status: ## État des processeurs NiFi et des files de contre-pression
+	@python3 scripts/nifi_flow.py --status
+
+.PHONY: nifi-replay
+nifi-replay: ## Rejoue l'ingestion de tous les fichiers présents dans le bucket
+	@python3 scripts/nifi_flow.py --reset-state
+
+.PHONY: topics
+topics: ## Volumétrie des topics Kafka
+	$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh \
+		--bootstrap-server kafka:9092 --topic-partitions '.*'
+
 # --- Exploitation --------------------------------------------------------------
 
 .PHONY: ps

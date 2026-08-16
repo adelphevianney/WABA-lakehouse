@@ -11,7 +11,8 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'env', 'check', 'up-l1', 'down-l1', 'up-l2', 'down-l2', 'dags',
         'ingest-l1', 'compact-l1', 'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1',
-        'smoke-l1', 'smoke-l2', 'queries-l2', 'ps', 'logs', 'sql', 'clean')]
+        'smoke-l1', 'smoke-l2', 'queries-l2', 'up-l3', 'down-l3', 'nifi-flow',
+        'nifi-status', 'nifi-replay', 'topics', 'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
     [Parameter(Position = 1)]
@@ -76,6 +77,14 @@ switch ($Command) {
         Write-Host '    gold-l2      Calcule les 7 tables de KPIs gold.*'
         Write-Host '    queries-l2   Requêtes analytiques du Level 2'
         Write-Host '    smoke-l2     Vérifie le médaillon, les KPIs et les DAGs'
+        Write-Host ''
+        Write-Host '    -- Level 3 --------------------------------------------------'
+        Write-Host '    up-l3        Démarre le Level 3 (socle + Airflow + Kafka + NiFi)'
+        Write-Host '    down-l3      Arrête le Level 3 (données conservées)'
+        Write-Host '    nifi-flow    (Re)construit et démarre le flux d''ingestion NiFi'
+        Write-Host '    nifi-status  État des processeurs et des files de contre-pression'
+        Write-Host '    nifi-replay  Rejoue l''ingestion de tous les fichiers du bucket'
+        Write-Host '    topics       Volumétrie des topics Kafka'
         Write-Host ''
         Write-Host '    ps         Consommation mémoire des conteneurs'
         Write-Host '    logs <svc> Suit les logs d''un service'
@@ -147,6 +156,30 @@ switch ($Command) {
     'smoke-l2' { & bash "$PSScriptRoot/scripts/smoke_l2.sh" }
 
     'queries-l2' { & bash "$PSScriptRoot/scripts/queries_l1.sh" level2 }
+
+    'up-l3' {
+        Initialize-Env
+        Invoke-Compose @('--profile', 'l3', 'up', '-d', '--wait', '--build')
+        Write-Host ''
+        Write-Host ("  NiFi : https://localhost:{0}/nifi ({1})" -f `
+            (Get-EnvValue 'NIFI_PORT' '8091'), (Get-EnvValue 'NIFI_USERNAME' 'waba_admin')) -ForegroundColor Green
+        Write-Host '  Le certificat est auto-signé : le navigateur demande une exception.' -ForegroundColor DarkGray
+    }
+
+    'down-l3' { Invoke-Compose @('--profile', 'l3', 'down') }
+
+    # Le flux NiFi est construit par l'API REST depuis la machine hôte : le
+    # script n'utilise que la bibliothèque standard, aucune dépendance à installer.
+    'nifi-flow' { & python "$PSScriptRoot\scripts\nifi_flow.py" }
+
+    'nifi-status' { & python "$PSScriptRoot\scripts\nifi_flow.py" '--status' }
+
+    'nifi-replay' { & python "$PSScriptRoot\scripts\nifi_flow.py" '--reset-state' }
+
+    'topics' {
+        Invoke-Compose @('exec', '-T', 'kafka', '/opt/kafka/bin/kafka-get-offsets.sh',
+            '--bootstrap-server', 'kafka:9092', '--topic-partitions', '.*')
+    }
 
     'ps' { docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' }
 

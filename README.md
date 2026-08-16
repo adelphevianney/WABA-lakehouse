@@ -48,8 +48,8 @@ flowchart LR
 | Niveau | Périmètre | État |
 |---|---|---|
 | **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | ✅ Complet — générateur, ingestion Spark, 8 tables `raw.*` idempotentes |
-| **Level 2** | Orchestration Airflow & architecture Médaillon | 🟡 Médaillon et 4 DAGs opérationnels — validation en cours |
-| **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | ⬜ À venir |
+| **Level 2** | Orchestration Airflow & architecture Médaillon | ✅ Complet — médaillon Bronze/Silver/Gold, 7 KPIs, 4 DAGs chaînés par Datasets |
+| **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | 🟡 Kafka, 11 topics et flux NiFi opérationnels — jobs streaming en cours |
 | **Level 4** | Kubernetes, gouvernance & observabilité | ⬜ À venir |
 
 ---
@@ -90,6 +90,7 @@ Interfaces exposées :
 |---|---|---|
 | **Générateur (Streamlit)** | http://localhost:8501 | aucun (dev local) |
 | **Airflow** (profil `l2`) | http://localhost:8090 | `admin` / cf. `.env` |
+| **NiFi** (profil `l3`) | https://localhost:8091/nifi | cf. `.env` — certificat auto-signé |
 | Console MinIO | http://localhost:9001 | ceux du `.env` |
 | Trino | http://localhost:8080 | aucun (dev local) |
 | Catalogue Iceberg REST | http://localhost:8181 | — |
@@ -262,6 +263,62 @@ Airflow et référencés par `{{ conn.waba_minio.login }}`, résolu à l'exécut
 paramètres d'environnement passent par des *Variables*. Chaque DAG accepte un paramètre `countries`
 permettant de rejouer un seul pays après correction.
 
+## Le Level 3 : ingestion temps réel
+
+```bash
+make up-l3        # socle + Airflow + Kafka + NiFi
+make nifi-flow    # construit et démarre le flux d'ingestion
+make nifi-status  # processeurs, files et seuils de contre-pression
+make topics       # volumétrie des topics
+```
+
+**Le flux, en une ligne.** NiFi recense `raw-landing` toutes les 30 secondes, écarte les
+référentiels, télécharge les fichiers de transactions, les découpe en événements JSON,
+y ajoute `ingestion_timestamp` et `source_file` — les deux mêmes colonnes que la chaîne
+batch — et publie chaque événement dans le topic de son jeu de données, avec le pays pour
+clé de partition.
+
+```
+ListS3 ──▶ UpdateAttribute ──▶ RouteOnAttribute ──▶ FetchS3Object ──▶ SplitRecord
+                                      │                   │               │
+                                 (référentiels)           └───────┬───────┘
+                                      ⊗                          ▼
+                                                          UpdateRecord ──▶ PublishKafka
+                                                                 │              │
+                                                                 └──▶ rebut ──▶ dlq-financial-events
+```
+
+**Construit par script, pas exporté.** [`scripts/nifi_flow.py`](scripts/nifi_flow.py) crée
+le contexte de paramètres, les six services de contrôle, les neuf processeurs et leurs
+connexions par appels à l'API REST. Le fichier se relit et se compare d'une version à
+l'autre, ce qu'un template exporté ne permet pas. Les noms de topics ne sont pas recopiés :
+ils viennent de `common.domain`, la même source que les jobs Spark qui les consomment.
+
+Le script est aussi le moyen d'exploitation du flux :
+
+| Commande | Effet |
+|---|---|
+| `python scripts/nifi_flow.py` | détruit et reconstruit le flux, puis le démarre |
+| `--status` | état des processeurs et remplissage des files |
+| `--stop` / `--start` | suspend ou reprend sans détruire |
+| `--reset-state` | efface l'état du recensement — rejoue tous les fichiers du bucket |
+| `--delete` | supprime le flux et son contexte de paramètres |
+
+**Aucun identifiant dans le flux.** Les clés MinIO sont déclarées comme paramètres
+*sensibles* d'un contexte NiFi : le serveur les chiffre dans sa configuration et son API
+ne les restitue jamais. Elles viennent de `.env`, comme partout ailleurs dans le projet.
+
+**Contre-pression calibrée en escalier.** Les files sont dimensionnées bien en deçà des
+valeurs par défaut de NiFi (10 000 objets, 1 Go) : 500 objets devant le producteur Kafka,
+200 devant le téléchargement. Une file pleine suspend le processeur qui l'alimente, et la
+saturation remonte jusqu'au recensement, qui cesse de lister. Le broker ne reçoit jamais
+plus qu'il n'écoule, et les fichiers non traités restent dans MinIO.
+
+**Deux modes d'échec, deux traitements.** Un fichier illisible part vers
+`dlq-financial-events` avec son contenu, son nom et son motif de rejet en en-têtes de
+message. Un broker indisponible n'est pas une donnée invalide : le lot est annulé plutôt
+que publié à moitié, et la contre-pression fait le reste.
+
 ## Contrainte mémoire — pourquoi des profils
 
 La plateforme complète du Level 4 dépasse 24 Go de RAM. Le développement étant mené sur une machine
@@ -315,15 +372,12 @@ swap=8GB
 │   │   └── compact.py   #   fusion des petits fichiers Parquet
 │   └── streaming/       # Level 3 — Spark Structured Streaming
 ├── airflow/dags/        # Level 2 — les 4 DAGs et leur socle commun
-├── jobs/
-│   ├── batch/           # Levels 1-2 — jobs PySpark (raw -> bronze -> silver -> gold)
-│   └── streaming/       # Level 3  — jobs Spark Structured Streaming
-├── airflow/dags/        # Level 2  — DAGs d'orchestration
-├── nifi/                # Level 3  — templates de flux NiFi
-├── superset/            # Level 4  — définitions des dashboards
-├── k8s/                 # Level 4  — manifestes et charts Helm
-├── sql/level1/          # requêtes analytiques du §1.4, montées dans Trino
+├── superset/            # Level 4 — définitions des dashboards
+├── k8s/                 # Level 4 — manifestes et charts Helm
+├── sql/                 # requêtes analytiques par niveau, montées dans Trino
 ├── scripts/             # tests de fumée et utilitaires
+│   ├── nifi_client.py   #   client de l'API NiFi (jeton, verbes, révisions)
+│   └── nifi_flow.py     #   Level 3 — construction du flux d'ingestion
 ├── tests/               # tests unitaires
 └── writeup/             # write-up technique (rédigé au fil de l'eau)
 ```
