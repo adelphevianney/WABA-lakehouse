@@ -49,7 +49,7 @@ flowchart LR
 |---|---|---|
 | **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | ✅ Complet — générateur, ingestion Spark, 8 tables `raw.*` idempotentes |
 | **Level 2** | Orchestration Airflow & architecture Médaillon | ✅ Complet — médaillon Bronze/Silver/Gold, 7 KPIs, 4 DAGs chaînés par Datasets |
-| **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | 🟡 Kafka, 11 topics et flux NiFi opérationnels — jobs streaming en cours |
+| **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | 🟡 NiFi → Kafka et Job 1 (Raw → Silver, double sink, DLQ) opérationnels — détection de fraude en cours |
 | **Level 4** | Kubernetes, gouvernance & observabilité | ⬜ À venir |
 
 ---
@@ -319,6 +319,43 @@ plus qu'il n'écoule, et les fichiers non traités restent dans MinIO.
 message. Un broker indisponible n'est pas une donnée invalide : le lot est annulé plutôt
 que publié à moitié, et la contre-pression fait le reste.
 
+### Job 1 — Raw vers Silver
+
+```bash
+make stream-silver-once   # traite ce qui est disponible puis s'arrête
+make stream-silver        # continu, micro-lots de 20 s
+```
+
+Le job consomme les quatre topics `raw-*`, valide chaque message, applique les
+transformations Silver et écrit dans **deux destinations** : les topics `silver-*` et
+les tables Iceberg `silver.*`.
+
+**Ni les transformations ni la validation ne sont réécrites.** Les constructeurs de
+[`jobs/batch/silver.py`](jobs/batch/silver.py) acceptent une source explicite : le job leur
+passe le micro-lot au lieu de la table brute et obtient exactement les mêmes colonnes. Les
+huit règles de [`jobs/batch/quality.py`](jobs/batch/quality.py) s'appliquent telles quelles,
+puisqu'elles s'évaluent sur des colonnes encore textuelles — ce que NiFi publie. Le chemin
+batch et le chemin streaming alimentent les mêmes tables ; deux définitions de Silver
+auraient divergé sans jamais lever d'erreur.
+
+**La file de rebut porte un motif exploitable**, pas un simple « message invalide » :
+
+| Message publié | Motif dans `dlq-financial-events` |
+|---|---|
+| texte qui n'est pas du JSON | `message JSON illisible` |
+| JSON sans `transaction_id` | `transaction_id manquant` |
+| `"amount": "beaucoup"` | `amount non convertible en DOUBLE` |
+| `country_code` CI et `currency` GHS | `devise incohérente avec le pays` |
+| entité `MICROFINANCE` au Ghana | `entité absente de ce pays` |
+
+Le message d'origine est conservé intact avec ses coordonnées Kafka : il pourra être rejoué
+après correction, là où un journal d'erreur imposerait de le reconstituer.
+
+**Deux déduplications superposées.** `dropDuplicatesWithinWatermark` écarte les doublons
+rapprochés sur une fenêtre de 10 minutes, sans état non borné ; le `MERGE` Iceberg rattrape
+les rejeux plus espacés. Mesuré : les 4 000 messages rejoués depuis le début des topics
+laissent les tables Silver strictement inchangées.
+
 ## Contrainte mémoire — pourquoi des profils
 
 La plateforme complète du Level 4 dépasse 24 Go de RAM. Le développement étant mené sur une machine
@@ -371,6 +408,9 @@ swap=8GB
 │   │   ├── regulatory.py#   agrégats BCEAO et CIMA
 │   │   └── compact.py   #   fusion des petits fichiers Parquet
 │   └── streaming/       # Level 3 — Spark Structured Streaming
+│       ├── kafka_io.py  #   lecture/écriture Kafka et points de reprise
+│       ├── iceberg_sink.py #   fusion d'un micro-lot, commits sérialisés
+│       └── raw_to_silver.py #   Job 1 — validation, DLQ, double récepteur
 ├── airflow/dags/        # Level 2 — les 4 DAGs et leur socle commun
 ├── superset/            # Level 4 — définitions des dashboards
 ├── k8s/                 # Level 4 — manifestes et charts Helm

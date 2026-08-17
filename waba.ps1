@@ -12,7 +12,8 @@ param(
     [ValidateSet('help', 'env', 'check', 'up-l1', 'down-l1', 'up-l2', 'down-l2', 'dags',
         'ingest-l1', 'compact-l1', 'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1',
         'smoke-l1', 'smoke-l2', 'queries-l2', 'up-l3', 'down-l3', 'nifi-flow',
-        'nifi-status', 'nifi-replay', 'topics', 'ps', 'logs', 'sql', 'clean')]
+        'nifi-status', 'nifi-replay', 'topics', 'stream-silver', 'stream-silver-once',
+        'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
     [Parameter(Position = 1)]
@@ -85,6 +86,8 @@ switch ($Command) {
         Write-Host '    nifi-status  État des processeurs et des files de contre-pression'
         Write-Host '    nifi-replay  Rejoue l''ingestion de tous les fichiers du bucket'
         Write-Host '    topics       Volumétrie des topics Kafka'
+        Write-Host '    stream-silver      Job 1 : raw-* vers silver-* et Iceberg (continu)'
+        Write-Host '    stream-silver-once Job 1 : traite l''existant puis s''arrête'
         Write-Host ''
         Write-Host '    ps         Consommation mémoire des conteneurs'
         Write-Host '    logs <svc> Suit les logs d''un service'
@@ -179,6 +182,14 @@ switch ($Command) {
     'topics' {
         Invoke-Compose @('exec', '-T', 'kafka', '/opt/kafka/bin/kafka-get-offsets.sh',
             '--bootstrap-server', 'kafka:9092', '--topic-partitions', '.*')
+    }
+
+    'stream-silver' {
+        Invoke-Compose @('exec', 'spark', 'python3', '-m', 'jobs.streaming.raw_to_silver')
+    }
+
+    'stream-silver-once' {
+        Invoke-Compose @('exec', '-T', 'spark', 'python3', '-m', 'jobs.streaming.raw_to_silver', '--once')
     }
 
     'ps' { docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' }

@@ -549,3 +549,79 @@ sur des fenêtres par pays, et une clé plus fine disperserait sur toutes les pa
 la Côte d'Ivoire pèsera plus lourd que le Togo. Sur un broker unique, cela n'a pas de
 conséquence ; en production, le nombre de partitions se dimensionnerait sur la volumétrie
 du plus gros pays.
+
+### D30. Une seule définition de Silver, deux modes d'exécution
+
+**Contexte.** Le Level 3 demande un job de streaming qui applique « les transformations
+Silver » et alimente les tables `silver.*` — les mêmes que le batch du Level 2.
+
+**Décision.** Les constructeurs de `jobs/batch/silver.py` acceptent une source explicite.
+Par défaut ils lisent la table brute ; le job de streaming leur passe le micro-lot qu'il
+vient de consommer. Les règles de validation sont réutilisées de même : elles s'évaluent
+sur des colonnes textuelles, ce que NiFi publie précisément.
+
+**Alternative écartée.** Réécrire les transformations pour le streaming. C'est le chemin
+naturel, et le plus dangereux : deux définitions de Silver alimentant les mêmes tables
+auraient divergé au premier ajustement de règle métier, et la divergence ne se serait vue
+que dans les chiffres — jamais dans une erreur.
+
+**Conséquence assumée.** Le job de streaming dépend du module batch, ce qui peut surprendre
+dans une architecture Lambda où l'on présente les deux chemins comme parallèles. C'est
+précisément le point : ils sont parallèles en exécution, pas en logique métier.
+
+### D31. Le filigrane porte sur l'heure d'arrivée, pas sur l'heure de l'événement
+
+**Contexte.** L'énoncé demande une déduplication « dans une fenêtre temporelle de 10 min ».
+Le réflexe est de poser le filigrane sur l'horodatage métier de la transaction.
+
+**Décision.** Il porte sur l'horodatage d'arrivée dans Kafka.
+
+**Alternative écartée.** L'horodatage métier. Les fichiers rejoués contiennent une journée
+entière d'événements de mars 2026 : dès le second micro-lot, le filigrane se serait établi
+en fin de journée, et tout événement du matin reçu ensuite aurait été considéré comme
+tardif puis écarté. Ce n'est pas une déduplication, c'est une perte silencieuse.
+
+**Conséquence assumée.** La fenêtre protège d'un rejeu rapproché, pas d'un rejeu espacé de
+plusieurs heures. C'est le `MERGE` Iceberg qui couvre le second cas : les deux mécanismes
+jouent à des échelles de temps différentes, et c'est leur superposition qui rend le job
+réellement idempotent — vérifié en rejouant les 4 000 messages, tables inchangées.
+
+### D32. Double récepteur par `foreachBatch`, Iceberg avant Kafka
+
+**Contexte.** Le §3.3 impose d'écrire le résultat dans les topics `silver-*` **et** dans
+les tables `silver.*`. Une écriture en continu ne vise qu'un récepteur.
+
+**Décision.** `foreachBatch` reçoit chaque micro-lot comme un DataFrame ordinaire ; le job
+fusionne d'abord dans Iceberg, publie ensuite dans Kafka.
+
+**Conséquence assumée.** L'ordre n'est pas indifférent. La table est fusionnée sur la clé
+naturelle, donc insensible à un rejeu ; le topic ne l'est pas. En fusionnant d'abord, un
+incident entre les deux écritures fait rejouer le micro-lot entier sans dupliquer la table
+— seul le topic reçoit un doublon, que le Job 2 dédupliquera sur sa propre fenêtre. Deux
+récepteurs sans transaction distribuée ne peuvent pas être atomiques : le choix consiste à
+placer l'incohérence possible là où elle se rattrape.
+
+### D33. Les commits de catalogue sont sérialisés
+
+**Contexte.** Quatre flux fusionnent chacun dans sa propre table. Rien ne les oppose
+métier — mais au premier essai, trois des quatre ont échoué sur
+`CommitStateUnknownException`, l'échec qui laisse ignorer si le commit a été appliqué.
+
+**Diagnostic.** Le catalogue REST persiste ses métadonnées dans un SQLite, qui verrouille
+le fichier entier. Le catalogue JDBC valide un commit en ouvrant une transaction en lecture
+qu'il promeut en écriture : deux flux simultanés se disputent le verrou, le second reçoit
+`SQLITE_BUSY` et le catalogue répond 500.
+
+**Alternative écartée.** Le journal WAL, réflexe habituel face à `SQLITE_BUSY`. Il aggrave
+ce cas précis : la promotion d'une transaction de lecture en écriture échoue alors en
+`SQLITE_BUSY_SNAPSHOT`, sur lequel aucun délai d'attente n'a de prise. Mesuré, pas supposé.
+
+**Décision.** Un délai d'attente sur le verrou pour les collisions batch/streaming, et un
+verrou dans le pilote Spark pour sérialiser les commits des flux entre eux. Il ne coûte
+rien : un commit Iceberg est une mise à jour de pointeur, les fichiers Parquet ayant déjà
+été écrits en parallèle.
+
+**Conséquence assumée.** C'est une rustine à une limite d'infrastructure, pas une propriété
+de l'architecture. Un catalogue adossé à PostgreSQL accepte les écritures concurrentes et
+rendrait le verrou inutile ; c'est ce que déploiera le Level 4. Le garder documenté vaut
+mieux que le faire disparaître : il dit quelle contrainte pèse sur ce déploiement.

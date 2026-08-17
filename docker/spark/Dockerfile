@@ -59,8 +59,14 @@ ENV PYTHONPATH=/app:/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zi
     PYTHONUNBUFFERED=1 \
     SPARK_LOCAL_IP=127.0.0.1
 
+# Points de reprise des jobs de streaming. Le répertoire est créé ici, et non
+# par Compose : un volume nommé monté sur un chemin absent de l'image serait créé
+# root:root, et l'utilisateur 185 ne pourrait pas y écrire. Créé au préalable, le
+# volume hérite de ces droits à son premier montage.
+RUN mkdir -p /checkpoints
+
 # L'image Spark s'exécute sous l'utilisateur 185 ; le code lui appartient.
-RUN chown -R 185:0 /app
+RUN chown -R 185:0 /app /checkpoints
 USER 185
 
 # Le conteneur reste disponible sans rien exécuter : au Level 1 les jobs sont

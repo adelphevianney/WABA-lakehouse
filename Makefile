@@ -122,6 +122,14 @@ nifi-status: ## État des processeurs NiFi et des files de contre-pression
 nifi-replay: ## Rejoue l'ingestion de tous les fichiers présents dans le bucket
 	@python3 scripts/nifi_flow.py --reset-state
 
+.PHONY: stream-silver
+stream-silver: ## Job 1 streaming — raw-* vers silver-* et tables Iceberg (continu, Ctrl-C pour arrêter)
+	$(COMPOSE) exec spark python3 -m jobs.streaming.raw_to_silver
+
+.PHONY: stream-silver-once
+stream-silver-once: ## Job 1 streaming — traite ce qui est disponible puis s'arrête
+	$(COMPOSE) exec -T spark python3 -m jobs.streaming.raw_to_silver --once
+
 .PHONY: topics
 topics: ## Volumétrie des topics Kafka
 	$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh \

@@ -1,1 +1,1 @@
-"""Jobs Spark Structured Streaming (Level 3)."""
+"""Jobs Spark Structured Streaming du Level 3."""

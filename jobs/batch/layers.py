@@ -158,6 +158,27 @@ def merge(
 ) -> int:
     """Fusionne un lot dans sa table cible et renvoie le nombre de lignes ajoutées.
 
+    Les deux comptages encadrant la fusion ont un coût : ils balaient la table
+    cible. C'est acceptable pour un traitement batch, qui s'exécute une fois par
+    cycle et dont le rapport d'exécution a besoin de ce chiffre. Un job de
+    streaming, qui fusionne toutes les vingt secondes, appelle `merge_into`
+    directement.
+    """
+    identifier = create_table(spark, frame, table, namespace, partitioning)
+    before = spark.table(identifier).count()
+    merge_into(spark, frame, identifier, key, partition_key)
+    return spark.table(identifier).count() - before
+
+
+def merge_into(
+    spark: SparkSession,
+    frame: DataFrame,
+    identifier: str,
+    key,
+    partition_key: Optional[str] = "country_code",
+) -> None:
+    """Fusionne un lot dans une table existante, sur sa clé naturelle.
+
     Même principe qu'à l'ingestion : `MERGE` sur la clé naturelle rend le job
     rejouable. Le prédicat inclut la colonne de partition pour qu'Iceberg élague
     au lieu de balayer la table entière.
@@ -166,10 +187,7 @@ def merge(
     couche brute : un recalcul de Silver doit propager une correction de règle
     métier, alors qu'une réingestion de la couche brute ne doit rien changer.
     """
-    identifier = create_table(spark, frame, table, namespace, partitioning)
-    before = spark.table(identifier).count()
-
-    view = "source_{}_{}".format(namespace, table)
+    view = "source_{}".format(identifier.replace(".", "_"))
     frame.createOrReplaceTempView(view)
 
     # Une table Gold est un agrégat : sa clé est la maille de restitution, donc
@@ -187,4 +205,3 @@ def merge(
             identifier=identifier, view=view, condition=condition
         )
     )
-    return spark.table(identifier).count() - before

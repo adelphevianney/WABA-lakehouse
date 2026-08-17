@@ -106,7 +106,21 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *s3-credentials
-      CATALOG_URI: jdbc:sqlite:/persist/waba_catalog.db
+      # SQLite verrouille le fichier entier : deux commits simultanés — le job
+      # batch et un flux de streaming, par exemple — se disputent le verrou et
+      # le second reçoit SQLITE_BUSY, que le catalogue traduit en 500. Côté
+      # Iceberg cela devient un `CommitStateUnknownException`, le pire des
+      # échecs puisqu'on ignore si le commit a été appliqué. Le délai d'attente
+      # fait patienter l'écrivain plutôt que de le rejeter aussitôt.
+      #
+      # Le journal WAL serait le réflexe suivant ; il aggrave le cas présent.
+      # Le catalogue JDBC ouvre une transaction en lecture puis la promeut en
+      # écriture, ce que WAL refuse dès qu'une autre connexion a écrit
+      # entre-temps — SQLITE_BUSY_SNAPSHOT, sur lequel aucun délai d'attente
+      # n'a de prise. Les écritures concurrentes sont donc sérialisées côté
+      # client (voir jobs/streaming/iceberg_sink.py) ; un catalogue adossé à
+      # PostgreSQL les accepterait nativement, ce que fera le Level 4.
+      CATALOG_URI: jdbc:sqlite:file:/persist/waba_catalog.db?busy_timeout=30000
       CATALOG_WAREHOUSE: ${ICEBERG_WAREHOUSE:-s3://lakehouse/}
       CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
       CATALOG_S3_ENDPOINT: http://minio:9000
@@ -209,7 +223,14 @@ services:
       BUCKET_ARCHIVE: ${BUCKET_ARCHIVE:-archive}
       WABA_GHS_PER_EUR: ${WABA_GHS_PER_EUR:-17.5}
       SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+      # Level 3 — accès au bus depuis les jobs de streaming.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      WABA_CHECKPOINT_DIR: /checkpoints
       TZ: ${TZ:-UTC}
+    volumes:
+      # Les points de reprise du streaming survivent au conteneur : sans cela,
+      # un redémarrage relirait les topics depuis le début et rejouerait tout.
+      - spark-checkpoints:/checkpoints
     healthcheck:
       test: ["CMD", "python3", "-c", "import pyspark, boto3"]
       interval: 30s
@@ -460,6 +481,7 @@ volumes:
   airflow-db:
   airflow-logs:
   kafka-data:
+  spark-checkpoints:
 
 networks:
   waba:

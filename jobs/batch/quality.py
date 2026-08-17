@@ -53,18 +53,29 @@ def cast_expression(name: str, type_: str) -> SparkColumn:
     return F.col(name).cast(type_.lower())
 
 
-def rejection_reason(spec: DatasetSpec) -> SparkColumn:
+def rejection_reason(
+    spec: DatasetSpec,
+    corrupt_column: str = CORRUPT_RECORD,
+    corrupt_reason: str = "ligne illisible",
+) -> SparkColumn:
     """Motif de rejet d'une ligne, ou null si elle est valide.
 
     Les contrôles sont ordonnés du plus structurel au plus métier : la première
     règle qui échoue donne le motif, ce qui évite d'empiler des messages
     redondants sur une ligne cassée.
+
+    Le chemin batch et le chemin streaming appellent tous deux cette fonction :
+    le premier reçoit des lignes de CSV, le second des messages Kafka, mais dans
+    les deux cas les colonnes sont encore textuelles et les huit règles
+    s'appliquent à l'identique. Seul le signal d'illisibilité structurelle
+    diffère — colonne `_corrupt_record` pour Spark CSV, `from_json` renvoyant
+    null pour Kafka —, d'où son paramétrage.
     """
     checks: List[Tuple[SparkColumn, str]] = []
 
     # 1. Ligne structurellement illisible (colonnes manquantes, guillemets
-    #    déséquilibrés). Spark l'a rangée dans la colonne dédiée.
-    checks.append((F.col(CORRUPT_RECORD).isNotNull(), "ligne illisible"))
+    #    déséquilibrés, JSON invalide). Le lecteur l'a signalée.
+    checks.append((F.col(corrupt_column).isNotNull(), corrupt_reason))
 
     # 2. Clés et colonnes obligatoires.
     for column in spec.columns:

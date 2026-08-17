@@ -21,6 +21,13 @@ Les champs personnels sont masqués ici et non en amont : la couche brute conser
 la fidélité de la source, comme toute zone d'atterrissage, et c'est à partir de
 Silver que la donnée est diffusée.
 
+Chaque constructeur accepte une source explicite. Par défaut il lit la table
+`raw.*` correspondante — c'est le chemin batch. Le job de streaming du Level 3
+lui passe le micro-lot qu'il vient de consommer dans Kafka, et obtient des
+colonnes strictement identiques. Sans cela, deux définitions de Silver
+coexisteraient et divergeraient au premier ajustement de règle métier, alors même
+que les deux chemins alimentent les mêmes tables.
+
 Exemples :
     python -m jobs.batch.silver
     python -m jobs.batch.silver --tables bank_transactions --countries CI SN
@@ -81,8 +88,13 @@ def _with_processed_at(frame: DataFrame) -> DataFrame:
 # =============================================================================
 
 
-def build_customers(spark: SparkSession, countries: Optional[List[str]]) -> DataFrame:
-    source = _restrict(layers.read(spark, "customers"), countries)
+def build_customers(
+    spark: SparkSession,
+    countries: Optional[List[str]],
+    source: Optional[DataFrame] = None,
+) -> DataFrame:
+    _source = source if source is not None else layers.read(spark, "customers")
+    source = _restrict(_source, countries)
     deduplicated = layers.deduplicate(source, "customer_id", ["customer_id"])
 
     return _with_processed_at(
@@ -108,8 +120,13 @@ def build_customers(spark: SparkSession, countries: Optional[List[str]]) -> Data
     )
 
 
-def build_accounts(spark: SparkSession, countries: Optional[List[str]]) -> DataFrame:
-    source = _restrict(layers.read(spark, "accounts"), countries)
+def build_accounts(
+    spark: SparkSession,
+    countries: Optional[List[str]],
+    source: Optional[DataFrame] = None,
+) -> DataFrame:
+    _source = source if source is not None else layers.read(spark, "accounts")
+    source = _restrict(_source, countries)
     deduplicated = layers.deduplicate(source, "account_id", ["account_id"])
     customers = layers.read(spark, "customers").select(
         F.col("customer_id"), F.col("segment").alias("customer_segment"),
@@ -158,8 +175,13 @@ def build_accounts(spark: SparkSession, countries: Optional[List[str]]) -> DataF
 # =============================================================================
 
 
-def build_bank_transactions(spark: SparkSession, countries: Optional[List[str]]) -> DataFrame:
-    source = _restrict(layers.read(spark, "bank_transactions"), countries)
+def build_bank_transactions(
+    spark: SparkSession,
+    countries: Optional[List[str]],
+    source: Optional[DataFrame] = None,
+) -> DataFrame:
+    _source = source if source is not None else layers.read(spark, "bank_transactions")
+    source = _restrict(_source, countries)
     # Départage par date d'ingestion : en cas de doublon, la version la plus
     # récemment reçue fait foi.
     deduplicated = layers.deduplicate(
@@ -243,8 +265,13 @@ def build_bank_transactions(spark: SparkSession, countries: Optional[List[str]])
     )
 
 
-def build_insurance_operations(spark: SparkSession, countries: Optional[List[str]]) -> DataFrame:
-    source = _restrict(layers.read(spark, "insurance_operations"), countries)
+def build_insurance_operations(
+    spark: SparkSession,
+    countries: Optional[List[str]],
+    source: Optional[DataFrame] = None,
+) -> DataFrame:
+    _source = source if source is not None else layers.read(spark, "insurance_operations")
+    source = _restrict(_source, countries)
     deduplicated = layers.deduplicate(
         source, "operation_id", ["ingestion_timestamp", "source_file"]
     )
@@ -290,8 +317,13 @@ def build_insurance_operations(spark: SparkSession, countries: Optional[List[str
     )
 
 
-def build_mobile_money_payments(spark: SparkSession, countries: Optional[List[str]]) -> DataFrame:
-    source = _restrict(layers.read(spark, "mobile_money_payments"), countries)
+def build_mobile_money_payments(
+    spark: SparkSession,
+    countries: Optional[List[str]],
+    source: Optional[DataFrame] = None,
+) -> DataFrame:
+    _source = source if source is not None else layers.read(spark, "mobile_money_payments")
+    source = _restrict(_source, countries)
     deduplicated = layers.deduplicate(
         source, "payment_id", ["ingestion_timestamp", "source_file"]
     )
@@ -340,8 +372,13 @@ def build_mobile_money_payments(spark: SparkSession, countries: Optional[List[st
     )
 
 
-def build_loan_repayments(spark: SparkSession, countries: Optional[List[str]]) -> DataFrame:
-    source = _restrict(layers.read(spark, "loan_repayments"), countries)
+def build_loan_repayments(
+    spark: SparkSession,
+    countries: Optional[List[str]],
+    source: Optional[DataFrame] = None,
+) -> DataFrame:
+    _source = source if source is not None else layers.read(spark, "loan_repayments")
+    source = _restrict(_source, countries)
     deduplicated = layers.deduplicate(
         source, "repayment_id", ["ingestion_timestamp", "source_file"]
     )
