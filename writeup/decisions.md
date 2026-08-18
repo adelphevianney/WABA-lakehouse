@@ -709,3 +709,38 @@ seuil de démonstration reste identifiable comme telle.
 **Alternative écartée.** Fixer par défaut un seuil assez bas pour que la démonstration
 produise des alertes. C'eût été présenter comme réglementaire une valeur choisie pour faire
 joli sur une capture d'écran.
+
+### D38. La requête Lambda doit d'abord ne pas compter deux fois
+
+**Contexte.** L'énoncé illustre le §3.4 par une jointure externe entre la table Gold
+consolidée et le topic Silver, dont les montants sont additionnés. Écrite telle quelle,
+elle donne un résultat faux.
+
+**Diagnostic.** Le Job 1 écrit chaque événement dans la table Silver **et** dans le topic
+Silver, et la table Gold est calculée depuis la première. Les deux sources décrivent donc
+les mêmes transactions : les additionner compte deux fois tout ce que le batch a déjà
+consolidé. Le problème n'est pas la jointure, c'est le recouvrement.
+
+**Décision.** La borne de partage est l'horodatage du dernier calcul Gold. Le batch fait foi
+jusqu'à cette borne ; seuls les événements traités par le streaming après elle viennent s'y
+ajouter. C'est la « vue temps réel » du modèle Lambda, et elle se lit dans une colonne de la
+requête : chaque ligne indique si elle vient du batch, du flux, ou des deux.
+
+**Conséquence assumée.** La requête dépend d'un horodatage de traitement présent des deux
+côtés — `processed_at`, apposé par le Job 1 sur chaque ligne Silver et par le job Gold sur
+chaque agrégat. C'est une colonne technique, et c'est elle qui rend la fusion exacte plutôt
+qu'approximative. Vérifié : après dépôt de deux nouveaux fichiers, la requête isole
+correctement 400 opérations en temps réel pour le Burkina et le Togo, et laisse les six
+autres pays en « batch seul ».
+
+### D39. Le fuseau de session de Trino est forcé
+
+**Contexte.** Trino tire son fuseau de session de la JVM. Un horodatage Iceberg est stocké
+avec fuseau, un horodatage décodé depuis un message Kafka ne l'est pas.
+
+**Décision.** Le conteneur Trino tourne en UTC, comme les sessions Spark.
+
+**Conséquence assumée.** Sans cela, la borne de partage de la requête Lambda comparerait des
+instants décalés du fuseau de la machine de développement, et le partage batch/streaming
+serait faux d'une heure ou deux — sans la moindre erreur, juste des chiffres légèrement
+différents. Huit pays sur trois fuseaux : la question n'est pas théorique.

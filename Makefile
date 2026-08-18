@@ -138,6 +138,10 @@ stream-gold: ## Job 2 streaming — fraude, AML et liquidité depuis silver-* (c
 stream-gold-once: ## Job 2 streaming — traite ce qui est disponible puis s'arrête
 	$(COMPOSE) exec -T spark python3 -m jobs.streaming.silver_to_gold --once
 
+.PHONY: queries-l3
+queries-l3: ## Requêtes du Level 3 : Lambda unifiée, alertes, rebut, fraîcheur
+	@bash scripts/queries_l1.sh level3
+
 .PHONY: topics
 topics: ## Volumétrie des topics Kafka
 	$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh \

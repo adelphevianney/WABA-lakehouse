@@ -148,10 +148,19 @@ services:
       <<: *s3-credentials
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      # Le fuseau de session de Trino est celui de la JVM. Le laisser au fuseau
+      # de la machine ferait diverger un horodatage lu dans Iceberg de son
+      # équivalent lu dans Kafka, et la requête Lambda comparerait des instants
+      # décalés — huit pays sur trois fuseaux, la question n'est pas théorique.
+      TZ: ${TZ:-UTC}
     ports:
       - "${TRINO_PORT:-8080}:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog:ro
+      # Descriptions des topics Kafka (§3.4). Un topic ne transporte que des
+      # octets : ce sont ces fichiers qui donnent un type à chaque champ, et
+      # rendent le bus interrogeable en SQL au même titre que le lakehouse.
+      - ./trino/kafka:/etc/trino/kafka:ro
       # Les requêtes analytiques sont montées plutôt que passées en ligne de
       # commande : le client les exécute depuis un fichier, ce qui évite tout
       # échappement du SQL par le shell appelant.

@@ -1,0 +1,27 @@
+{
+  "tableName": "gold-aml-events",
+  "schemaName": "default",
+  "topicName": "gold-aml-events",
+  "message": {
+    "dataFormat": "json",
+    "fields": [
+      {"name": "event_id", "mapping": "event_id", "type": "VARCHAR"},
+      {"name": "transaction_id", "mapping": "transaction_id", "type": "VARCHAR"},
+      {"name": "event_time", "mapping": "timestamp", "type": "TIMESTAMP", "dataFormat": "iso8601"},
+      {"name": "account_id", "mapping": "account_id", "type": "VARCHAR"},
+      {"name": "customer_token", "mapping": "customer_token", "type": "VARCHAR"},
+      {"name": "country_code", "mapping": "country_code", "type": "VARCHAR"},
+      {"name": "entity_type", "mapping": "entity_type", "type": "VARCHAR"},
+      {"name": "transaction_type", "mapping": "transaction_type", "type": "VARCHAR"},
+      {"name": "channel", "mapping": "channel", "type": "VARCHAR"},
+      {"name": "currency", "mapping": "currency", "type": "VARCHAR"},
+      {"name": "amount", "mapping": "amount", "type": "DOUBLE"},
+      {"name": "amount_eur", "mapping": "amount_eur", "type": "DOUBLE"},
+      {"name": "threshold", "mapping": "threshold", "type": "DOUBLE"},
+      {"name": "threshold_ratio", "mapping": "threshold_ratio", "type": "DOUBLE"},
+      {"name": "beneficiary_country", "mapping": "beneficiary_country", "type": "VARCHAR"},
+      {"name": "est_transfrontalier", "mapping": "est_transfrontalier", "type": "BOOLEAN"},
+      {"name": "detected_at", "mapping": "detected_at", "type": "TIMESTAMP", "dataFormat": "iso8601"}
+    ]
+  }
+}

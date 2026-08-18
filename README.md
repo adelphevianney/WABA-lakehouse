@@ -398,6 +398,42 @@ sorties nettes / encours reste inférieur au millionième : aucun seuil régleme
 ne se déclenche. La valeur réglementaire reste dans `common.domain`, surchargeable par
 `WABA_LIQUIDITY_RATIO`, et **chaque alerte enregistre le seuil qui l'a produite**.
 
+### Interroger le bus en SQL — la requête Lambda
+
+```bash
+make queries-l3   # Lambda unifiée, alertes, file de rebut, fraîcheur du flux
+```
+
+Un catalogue Kafka expose quatre topics à Trino. Un topic n'a pas de schéma — Kafka
+transporte des octets : ce sont les descriptions de [`docker/trino/kafka/`](docker/trino/kafka)
+qui donnent un type à chaque champ du JSON.
+
+```sql
+SELECT transaction_id, event_time, country_code, amount_eur
+FROM kafka.default."silver-bank-transactions";
+```
+
+**Le piège de la requête Lambda, c'est le double comptage.** Le Job 1 écrit chaque événement
+dans la table Silver *et* dans le topic Silver, et la table Gold est calculée depuis la
+première : additionner les deux sources compte deux fois tout ce que le batch a déjà
+consolidé. La borne de partage est l'horodatage du dernier calcul Gold — le batch fait foi
+jusque-là, le flux prend le relais au-delà. Chaque ligne du résultat indique sa provenance :
+
+```
+ pays |    jour    | operations_batch | operations_temps_reel | montant_total_eur |     provenance
+------+------------+------------------+-----------------------+-------------------+--------------------
+ BF   | 2026-03-31 |              700 |                   400 |          483405.6 | batch + temps réel
+ BJ   | 2026-03-31 |              700 |                     0 |         329338.04 | batch seul
+```
+
+Les quatre autres requêtes servent l'exploitation : cohérence du double récepteur (alertes
+Iceberg contre alertes Kafka — **cohérent sur les trois types**), rapprochement AML entre
+consolidé et temps réel, contenu de la file de rebut avec son motif et un extrait du message
+d'origine, et décomposition de la latence de bout en bout.
+
+Le catalogue Kafka ne se connecte au broker qu'à la première requête : les profils `l1` et
+`l2` démarrent sans lui, et seules les requêtes Kafka échouent — vérifié broker arrêté.
+
 ## Contrainte mémoire — pourquoi des profils
 
 La plateforme complète du Level 4 dépasse 24 Go de RAM. Le développement étant mené sur une machine
@@ -422,7 +458,8 @@ swap=8GB
 ├── docker/              # compose.yml (profils par niveau) et configuration des services
 │   ├── spark/           # image d'exécution des jobs (Iceberg + S3A)
 │   ├── streamlit/       # image du générateur
-│   └── trino/catalog/   # catalogues Trino (credentials injectés par variables d'env)
+│   ├── trino/catalog/   # catalogues Trino (credentials injectés par variables d'env)
+│   └── trino/kafka/     # descriptions des topics, qui leur donnent un schéma SQL
 ├── common/              # socle partagé générateur / jobs Spark
 │   ├── domain.py        #   périmètre, devises, matrice pays × entité, seuils
 │   └── pii.py           #   pseudonymisation et masquage

@@ -13,7 +13,7 @@ param(
         'ingest-l1', 'compact-l1', 'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1',
         'smoke-l1', 'smoke-l2', 'queries-l2', 'up-l3', 'down-l3', 'nifi-flow',
         'nifi-status', 'nifi-replay', 'topics', 'stream-silver', 'stream-silver-once',
-        'stream-gold', 'stream-gold-once', 'ps', 'logs', 'sql', 'clean')]
+        'stream-gold', 'stream-gold-once', 'queries-l3', 'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
     [Parameter(Position = 1)]
@@ -90,6 +90,7 @@ switch ($Command) {
         Write-Host '    stream-silver-once Job 1 : traite l''existant puis s''arrête'
         Write-Host '    stream-gold        Job 2 : fraude, AML et liquidité (continu)'
         Write-Host '    stream-gold-once   Job 2 : traite l''existant puis s''arrête'
+        Write-Host '    queries-l3         Requête Lambda unifiée, alertes, rebut, fraîcheur'
         Write-Host ''
         Write-Host '    ps         Consommation mémoire des conteneurs'
         Write-Host '    logs <svc> Suit les logs d''un service'
@@ -201,6 +202,8 @@ switch ($Command) {
     'stream-gold-once' {
         Invoke-Compose @('exec', '-T', 'spark', 'python3', '-m', 'jobs.streaming.silver_to_gold', '--once')
     }
+
+    'queries-l3' { & bash "$PSScriptRoot/scripts/queries_l1.sh" level3 }
 
     'ps' { docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' }
 
