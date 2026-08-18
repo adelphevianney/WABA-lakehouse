@@ -122,6 +122,32 @@ def deduplicate(frame: DataFrame, key: str, order_by: Sequence[str]) -> DataFram
     )
 
 
+def evolve_schema(spark: SparkSession, identifier: str, expected) -> List[str]:
+    """Ajoute à une table existante les colonnes qu'elle ne porte pas encore.
+
+    `CREATE TABLE IF NOT EXISTS` ne fait rien sur une table déjà présente : une
+    colonne ajoutée au schéma du dépôt resterait invisible dans un environnement
+    déjà déployé, et l'écriture échouerait ensuite pour cause de schéma
+    incompatible — sans que rien n'indique que la cause est une table restée en
+    arrière.
+
+    Iceberg fait évoluer un schéma sans réécrire les données : les colonnes
+    reçoivent un identifiant propre, et les fichiers antérieurs rendent
+    simplement null pour celles qu'ils ne contiennent pas. Seuls les ajouts sont
+    automatisés ici ; une suppression ou un changement de type sont des
+    ruptures de contrat, qui doivent rester des décisions explicites.
+
+    `expected` est une suite de couples (nom, type SQL).
+    """
+    present = {field.name.lower() for field in spark.table(identifier).schema.fields}
+    ajoutees: List[str] = []
+    for name, type_ in expected:
+        if name.lower() not in present:
+            spark.sql("ALTER TABLE {} ADD COLUMN {} {}".format(identifier, name, type_))
+            ajoutees.append(name)
+    return ajoutees
+
+
 def create_table(
     spark: SparkSession,
     frame: DataFrame,
@@ -129,12 +155,12 @@ def create_table(
     namespace: str,
     partitioning: str,
 ) -> str:
-    """Crée la table cible si elle n'existe pas, à partir du schéma du DataFrame."""
+    """Crée la table cible si elle n'existe pas, et la fait évoluer si besoin."""
     identifier = qualified(table, namespace)
-    columns = ",\n    ".join(
-        "{} {}".format(field.name, field.dataType.simpleString().upper())
-        for field in frame.schema.fields
-    )
+    declared = [
+        (field.name, field.dataType.simpleString().upper()) for field in frame.schema.fields
+    ]
+    columns = ",\n    ".join("{} {}".format(name, type_) for name, type_ in declared)
     spark.sql("CREATE NAMESPACE IF NOT EXISTS {}.{}".format(CATALOG, namespace))
     spark.sql(
         "CREATE TABLE IF NOT EXISTS {identifier} (\n    {columns}\n)\n"
@@ -144,6 +170,7 @@ def create_table(
             identifier=identifier, columns=columns, partitioning=partitioning
         )
     )
+    evolve_schema(spark, identifier, declared)
     return identifier
 
 

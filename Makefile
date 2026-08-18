@@ -130,6 +130,14 @@ stream-silver: ## Job 1 streaming — raw-* vers silver-* et tables Iceberg (con
 stream-silver-once: ## Job 1 streaming — traite ce qui est disponible puis s'arrête
 	$(COMPOSE) exec -T spark python3 -m jobs.streaming.raw_to_silver --once
 
+.PHONY: stream-gold
+stream-gold: ## Job 2 streaming — fraude, AML et liquidité depuis silver-* (continu)
+	$(COMPOSE) exec spark python3 -m jobs.streaming.silver_to_gold
+
+.PHONY: stream-gold-once
+stream-gold-once: ## Job 2 streaming — traite ce qui est disponible puis s'arrête
+	$(COMPOSE) exec -T spark python3 -m jobs.streaming.silver_to_gold --once
+
 .PHONY: topics
 topics: ## Volumétrie des topics Kafka
 	$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh \

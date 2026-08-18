@@ -379,6 +379,28 @@ def generate_accounts(
         defaulting = calib.is_defaulting_account(loan_ids, loan_countries)
         days_past_due[is_loan] = calib.overdue_days_for(loan_ids, defaulting)
 
+    # Prime annuelle portée par la police, exprimée dans sa devise.
+    #
+    # Même raisonnement que pour les jours d'impayé, appliqué à l'assurance. La
+    # règle de fraude du §3.3 compare un sinistre à « trois fois la prime
+    # annuelle versée » : la reconstituer depuis les échéances observées ne la
+    # rendrait calculable que sur les polices ayant cotisé pendant la fenêtre
+    # d'observation — 21 % des sinistres réglés sur trois jours de données. Pire,
+    # y substituer une prime médiane de branche produirait des faux positifs en
+    # série, les primes s'étalant sur un facteur dix : un sinistre normal sur une
+    # police chère dépasserait trois fois la médiane sans rien avoir d'anormal.
+    #
+    # Un assureur connaît la prime de ses contrats ; elle relève des données de
+    # référence, pas d'une inférence. Le champ ne concerne que les polices.
+    annual_premium = np.full(n, np.nan)
+    is_policy = account_types == "INSURANCE_POLICY"
+    if is_policy.any():
+        policy_ids = account_ids[is_policy].reset_index(drop=True)
+        rates = pd.Series(currencies[is_policy]).map(cfg.FX_PER_EUR).to_numpy()
+        annual_premium[is_policy] = np.round(
+            calib.annual_premium_eur(policy_ids) * rates, 2
+        )
+
     return pd.DataFrame({
         "account_id": account_ids,
         "customer_id": customers["customer_id"].to_numpy()[owner_idx],
@@ -395,6 +417,7 @@ def generate_accounts(
             np.array(cfg.ACCOUNT_STATUSES), size=n, p=np.array(cfg.ACCOUNT_STATUS_WEIGHTS)
         ),
         "days_past_due": days_past_due,
+        "annual_premium": annual_premium,
     })
 
 

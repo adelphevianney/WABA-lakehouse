@@ -238,6 +238,11 @@ ACCOUNTS = DatasetSpec(
         # Ajoutée au schéma A.2 : sans elle, le NPL ne serait calculable qu'à
         # partir des échéances observées, donc sur une fraction du portefeuille.
         Column("days_past_due", "INT"),
+        # Prime annuelle de la police, nulle hors assurance. Ajoutée pour la même
+        # raison : la règle de fraude « sinistre supérieur à trois fois la prime
+        # annuelle » a besoin d'un montant de référence par contrat, que les
+        # échéances observées ne fournissent que pour une minorité de polices.
+        Column("annual_premium", "DOUBLE"),
     ),
     event_time=INGESTION_TIMESTAMP,
     enums={

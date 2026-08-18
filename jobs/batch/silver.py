@@ -163,6 +163,12 @@ def build_accounts(
             # calculable sur l'intégralité du portefeuille.
             (F.col("days_past_due") > F.lit(dom.NPL_OVERDUE_DAYS)).alias("est_douteux"),
             (F.col("account_type") == F.lit("LOAN")).alias("est_pret"),
+            # Prime annuelle de la police, montant de référence de la règle de
+            # fraude « sinistre supérieur à trois fois la prime » du §3.3. Elle
+            # est convertie ici pour être comparable à un sinistre déjà exprimé
+            # en euros, quel que soit le pays.
+            F.col("annual_premium"),
+            layers.to_eur(F.col("annual_premium"), F.col("currency")).alias("annual_premium_eur"),
             # Un compte clos ou dormant fausse les moyennes d'encours : le
             # signaler permet de l'exclure explicitement en aval.
             F.col("status").isin("ACTIVE", "FROZEN").alias("est_ouvert"),

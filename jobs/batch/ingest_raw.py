@@ -36,7 +36,7 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import StringType, StructField, StructType
 from pyspark.sql.window import Window
 
-from jobs.batch import landing, quality
+from jobs.batch import landing, layers, quality
 from jobs.batch import schemas as sch
 from jobs.batch.session import RAW_NAMESPACE, build_session, ensure_namespace, table_name
 
@@ -167,6 +167,14 @@ def ingest_dataset(
     target = table_name(spec.table)
 
     spark.sql(sch.create_table_ddl(spec, target))
+    # Une colonne ajoutée au schéma du dépôt doit apparaître dans une table déjà
+    # créée, faute de quoi l'écriture échouerait sur un schéma incompatible.
+    ajoutees = layers.evolve_schema(
+        spark, target, [(c.name, c.type) for c in spec.all_columns]
+    )
+    if ajoutees:
+        logger.info("%s : colonne(s) ajoutée(s) au schéma — %s",
+                    spec.table, ", ".join(ajoutees))
 
     # Les comptages encadrent l'ensemble des lots : les répéter à chaque lot
     # coûterait un balayage complet de la table par passe.

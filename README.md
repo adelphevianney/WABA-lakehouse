@@ -49,7 +49,7 @@ flowchart LR
 |---|---|---|
 | **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | ✅ Complet — générateur, ingestion Spark, 8 tables `raw.*` idempotentes |
 | **Level 2** | Orchestration Airflow & architecture Médaillon | ✅ Complet — médaillon Bronze/Silver/Gold, 7 KPIs, 4 DAGs chaînés par Datasets |
-| **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | 🟡 NiFi → Kafka et Job 1 (Raw → Silver, double sink, DLQ) opérationnels — détection de fraude en cours |
+| **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | 🟡 NiFi → Kafka, Job 1 (double sink, DLQ) et Job 2 (fraude, AML, liquidité) opérationnels — requête Lambda en cours |
 | **Level 4** | Kubernetes, gouvernance & observabilité | ⬜ À venir |
 
 ---
@@ -356,6 +356,48 @@ rapprochés sur une fenêtre de 10 minutes, sans état non borné ; le `MERGE` I
 les rejeux plus espacés. Mesuré : les 4 000 messages rejoués depuis le début des topics
 laissent les tables Silver strictement inchangées.
 
+### Job 2 — Silver vers Gold : fraude, AML et liquidité
+
+```bash
+make stream-gold-once   # traite ce qui est disponible puis s'arrête
+make stream-gold        # continu
+```
+
+Trois règles de fraude, la surveillance AML et le suivi de liquidité alimentent trois topics
+d'alertes et trois tables `gold.*`.
+
+**Validé contre l'oracle du générateur.** `generator/anomalies.py` expose, en regard de
+chaque injection, une implémentation de référence de la règle en pandas. Les alertes du job
+sont comparées à ce que cet oracle trouve sur les mêmes fichiers — les deux partagent leurs
+seuils via `common.domain`, mais aucune ligne de logique : l'un travaille en pandas sur un
+fichier, l'autre en Spark sur un flux fenêtré.
+
+| Règle | Oracle (pandas) | Job 2 (Spark Streaming) |
+|---|---|---|
+| Rafales de virements (fenêtre 5 min / 1 min) | 6 comptes, 18 virements | **6 comptes, 18 virements** |
+| Origine inhabituelle (mobile money) | 20 paiements | **20 paiements** |
+| Sinistre > 3× la prime annuelle | 1 sinistre | **1 sinistre** |
+| AML — seuil déclaratif BCEAO | 58 virements | **58 virements** |
+
+La liste des comptes incriminés est identique des deux côtés. Rejouer l'intégralité des
+topics laisse les tables d'alertes inchangées : 27 alertes de fraude et 58 événements AML
+avant comme après.
+
+**Trois queries, pas cinq.** Les règles qui s'évaluent ligne à ligne — AML, origine
+inhabituelle, sinistre excessif — partagent une query qui lit les trois topics et les
+aiguille dans son micro-lot. Seules les deux règles à fenêtre, qui exigent une agrégation
+dans le plan de streaming, en ont une à elles.
+
+**Une rafale, une alerte.** Une fenêtre de 5 minutes glissant d'une minute contient la même
+rafale jusqu'à cinq fois. Les fenêtres décrivant le même épisode sont regroupées sur le
+couple compte / première transaction — ce qui les rassemble exactement, sans heuristique de
+recouvrement.
+
+**Le seuil de liquidité est un paramètre.** Sur un jeu de données échantillonné, le ratio
+sorties nettes / encours reste inférieur au millionième : aucun seuil réglementaire crédible
+ne se déclenche. La valeur réglementaire reste dans `common.domain`, surchargeable par
+`WABA_LIQUIDITY_RATIO`, et **chaque alerte enregistre le seuil qui l'a produite**.
+
 ## Contrainte mémoire — pourquoi des profils
 
 La plateforme complète du Level 4 dépasse 24 Go de RAM. Le développement étant mené sur une machine
@@ -410,7 +452,8 @@ swap=8GB
 │   └── streaming/       # Level 3 — Spark Structured Streaming
 │       ├── kafka_io.py  #   lecture/écriture Kafka et points de reprise
 │       ├── iceberg_sink.py #   fusion d'un micro-lot, commits sérialisés
-│       └── raw_to_silver.py #   Job 1 — validation, DLQ, double récepteur
+│       ├── raw_to_silver.py #   Job 1 — validation, DLQ, double récepteur
+│       └── silver_to_gold.py #  Job 2 — fraude, AML, liquidité
 ├── airflow/dags/        # Level 2 — les 4 DAGs et leur socle commun
 ├── superset/            # Level 4 — définitions des dashboards
 ├── k8s/                 # Level 4 — manifestes et charts Helm

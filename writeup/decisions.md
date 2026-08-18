@@ -625,3 +625,87 @@ rien : un commit Iceberg est une mise à jour de pointeur, les fichiers Parquet 
 de l'architecture. Un catalogue adossé à PostgreSQL accepte les écritures concurrentes et
 rendrait le verrou inutile ; c'est ce que déploiera le Level 4. Le garder documenté vaut
 mieux que le faire disparaître : il dit quelle contrainte pèse sur ce déploiement.
+
+### D34. La prime annuelle appartient au contrat, pas à l'historique des paiements
+
+**Contexte.** La règle de fraude « sinistre supérieur à trois fois la prime annuelle versée »
+suppose un montant de référence par police. Le réflexe est de le reconstituer depuis les
+échéances observées.
+
+**Mesure.** Sur trois jours de données, 21 % des sinistres réglés seulement portent sur une
+police ayant cotisé pendant la fenêtre. La règle serait donc aveugle sur quatre sinistres
+sur cinq. Y substituer une prime médiane de branche est pire : les primes s'étalent sur un
+facteur dix, et un sinistre normal sur une police chère dépasserait trois fois la médiane
+sans rien avoir d'anormal — des faux positifs en série, sur les meilleurs clients.
+
+**Décision.** La prime annuelle rejoint le référentiel des comptes, comme l'avaient fait les
+jours d'impayé pour le NPL et pour la même raison : un indicateur prudentiel se calcule sur
+le portefeuille entier, pas sur la fraction que la fenêtre d'observation éclaire. Un
+assureur connaît la prime de ses contrats ; elle relève des données de référence, pas d'une
+inférence.
+
+**Conséquence assumée.** Le schéma de l'annexe A.2 est à nouveau enrichi. Une table Iceberg
+déjà créée ne suit pas : `CREATE TABLE IF NOT EXISTS` ne fait rien sur une table existante,
+et l'écriture aurait échoué ensuite sur un schéma incompatible, sans indiquer que la cause
+est une table restée en arrière. Les jobs comparent désormais le schéma déclaré à celui de
+la table et ajoutent les colonnes manquantes. Seuls les ajouts sont automatisés : une
+suppression ou un changement de type sont des ruptures de contrat, qui doivent rester des
+décisions explicites. Résultat : la règle couvre 100 % des sinistres réglés.
+
+### D35. Une rafale, une alerte
+
+**Contexte.** L'énoncé prescrit une fenêtre de cinq minutes glissant d'une minute. Appliquée
+telle quelle, elle produisait 455 alertes là où le générateur avait injecté six rafales.
+
+**Diagnostic.** Deux causes distinctes. La première : une rafale entièrement contenue dans
+une fenêtre l'est aussi dans les quatre suivantes, et part donc cinq fois. La seconde, plus
+grave : les topics Silver contenaient les doublons de rejeux antérieurs, et une transaction
+reçue trois fois suffisait à constituer une fausse rafale à elle seule.
+
+**Décisions.** L'entrée du job est dédupliquée sur la clé naturelle — ce que la conception du
+Job 1 annonçait sans que rien ne l'applique. Et les fenêtres décrivant le même épisode sont
+regroupées sur le couple compte / première transaction : toutes les fenêtres qui contiennent
+la même rafale partagent cette première transaction, ce qui les rassemble exactement, sans
+heuristique de recouvrement. Une fenêtre englobant un virement antérieur décrirait un
+épisode réellement plus large, et garde son alerte.
+
+**Conséquence assumée.** Le regroupement est aussi une nécessité technique : un `MERGE` dont
+la source présente deux fois la même clé échoue. Après correction, le job retrouve
+exactement les six comptes de l'oracle, et les dix-huit virements qui les composent.
+
+### D36. L'oracle du générateur sert de test d'acceptation
+
+**Contexte.** Vérifier une détection de fraude en streaming se fait d'ordinaire à l'œil : on
+regarde si des alertes sortent. Cela ne dit rien de ce qui n'est pas sorti.
+
+**Décision.** `generator/anomalies.py` expose, en regard de chaque injection, une
+implémentation de référence de la règle en pandas. Les alertes du job sont comparées à ce
+que cet oracle trouve sur les mêmes fichiers.
+
+**Résultat mesuré.** Concordance exacte sur les quatre règles : 6 comptes en rafale pour 18
+virements, 20 paiements d'origine inhabituelle, 1 sinistre excessif, 58 virements au-dessus
+du seuil déclaratif. La liste des comptes incriminés est identique des deux côtés.
+
+**Conséquence assumée.** L'oracle et le job partagent leurs seuils, tirés de `common.domain`
+— ils ne peuvent donc pas diverger sur un chiffre. Ils ne partagent en revanche aucune ligne
+de logique : l'un travaille en pandas sur un fichier, l'autre en Spark sur un flux fenêtré.
+C'est cet écart d'implémentation qui donne sa valeur à la concordance.
+
+### D37. Le seuil de liquidité est un paramètre, la règle ne l'est pas
+
+**Contexte.** L'énoncé demande une alerte « si un seuil de couverture minimal est franchi »,
+sans le chiffrer. La règle retenue compare les sorties nettes d'un pays sur la fenêtre à ses
+encours.
+
+**Constat.** Sur un jeu de données échantillonné — quelques centaines de transactions par
+pays et par jour face aux encours de 250 000 comptes — le ratio observé reste inférieur au
+millionième. Aucun seuil réglementaire crédible ne se déclenche.
+
+**Décision.** La valeur réglementaire reste dans `common.domain` et le job la lit ; elle est
+surchargeable par variable d'environnement, et **chaque alerte enregistre le seuil qui l'a
+produite**. Le mécanisme se démontre donc sans travestir la norme, et une alerte issue d'un
+seuil de démonstration reste identifiable comme telle.
+
+**Alternative écartée.** Fixer par défaut un seuil assez bas pour que la démonstration
+produise des alertes. C'eût été présenter comme réglementaire une valeur choisie pour faire
+joli sur une capture d'écran.
