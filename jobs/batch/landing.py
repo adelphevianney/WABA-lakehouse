@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Tuple
 
 import boto3
@@ -75,6 +76,32 @@ def list_pending(client, bucket: str, datasets=None, countries=None) -> Dict[str
 def to_uris(bucket: str, keys: List[str]) -> List[str]:
     """Chemins s3a:// consommables par Spark."""
     return ["s3a://{}/{}".format(bucket, key) for key in keys]
+
+
+def older_than(client, bucket: str, keys: List[str], minutes: int) -> List[str]:
+    """Restreint une liste aux objets déposés depuis plus de `minutes`.
+
+    Sert de délai de grâce avant archivage. Au Level 3, NiFi surveille la même
+    zone d'atterrissage que le job batch : un fichier archivé avant que NiFi ne
+    l'ait recensé disparaît du chemin streaming sans laisser de trace, et un
+    fichier archivé entre le recensement et le téléchargement produit un rejet
+    qui n'en est pas un. Laisser mûrir les fichiers quelques minutes supprime la
+    course, sans renoncer à l'archivage.
+    """
+    if minutes <= 0:
+        return list(keys)
+
+    limite = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    mûrs: List[str] = []
+    for key in keys:
+        try:
+            depose = client.head_object(Bucket=bucket, Key=key)["LastModified"]
+        except Exception as exc:  # noqa: BLE001 — un objet illisible n'est pas archivé
+            logger.warning("âge indéterminé pour %s : %s", key, exc)
+            continue
+        if depose <= limite:
+            mûrs.append(key)
+    return mûrs
 
 
 def archive(client, raw_bucket: str, archive_bucket: str, keys: List[str]) -> Tuple[int, int]:

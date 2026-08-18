@@ -49,7 +49,7 @@ flowchart LR
 |---|---|---|
 | **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | ✅ Complet — générateur, ingestion Spark, 8 tables `raw.*` idempotentes |
 | **Level 2** | Orchestration Airflow & architecture Médaillon | ✅ Complet — médaillon Bronze/Silver/Gold, 7 KPIs, 4 DAGs chaînés par Datasets |
-| **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | 🟡 NiFi → Kafka, Job 1 (double sink, DLQ) et Job 2 (fraude, AML, liquidité) opérationnels — requête Lambda en cours |
+| **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | ✅ Complet — NiFi → Kafka, 2 jobs streaming, DLQ, requête Lambda unifiée, 10 contrôles de fumée |
 | **Level 4** | Kubernetes, gouvernance & observabilité | ⬜ À venir |
 
 ---
@@ -434,6 +434,32 @@ d'origine, et décomposition de la latence de bout en bout.
 Le catalogue Kafka ne se connecte au broker qu'à la première requête : les profils `l1` et
 `l2` démarrent sans lui, et seules les requêtes Kafka échouent — vérifié broker arrêté.
 
+### Batch et streaming sur la même zone d'atterrissage
+
+Le §1.2 exige d'archiver les fichiers traités ; le §3.1 fait surveiller la même zone par
+NiFi. Un fichier archivé avant d'avoir été recensé **disparaît du chemin streaming sans
+laisser de trace** — aucune erreur, juste des événements qui n'arrivent jamais.
+
+L'archivage est donc conservé, assorti d'un délai de grâce : un fichier n'est archivé
+qu'après dix minutes de présence (`--archive-after`, ou `WABA_ARCHIVE_AFTER_MINUTES`). Le
+coût est nul aux niveaux inférieurs — les fichiers partent à la passe suivante — et les
+réingérer entre-temps est sans effet grâce au `MERGE`.
+
+### Vérifier le niveau
+
+```bash
+make smoke-l3
+```
+
+Dix contrôles enchaînés : les 11 topics existent, le flux NiFi tourne avec sa
+contre-pression calibrée, un fichier déposé atteint les topics `raw-*`, le Job 1 alimente
+les topics `silver-*` **et** les tables Iceberg, un message malformé part en file de rebut
+avec un motif exploitable en SQL, les trois règles de fraude produisent des alertes et
+l'oracle du générateur les retrouve dans les fichiers d'origine, l'AML publie ses
+franchissements de seuil, la requête Lambda ne compte pas deux fois — vérifié en
+consolidant puis en exigeant que la vue temps réel soit vide —, un fichier fraîchement
+déposé survit à un passage du batch, et rejouer l'intégralité des topics ne duplique rien.
+
 ## Contrainte mémoire — pourquoi des profils
 
 La plateforme complète du Level 4 dépasse 24 Go de RAM. Le développement étant mené sur une machine
@@ -496,6 +522,7 @@ swap=8GB
 ├── k8s/                 # Level 4 — manifestes et charts Helm
 ├── sql/                 # requêtes analytiques par niveau, montées dans Trino
 ├── scripts/             # tests de fumée et utilitaires
+│   ├── smoke_l1..l3     #   contrôles de non-régression, un par niveau
 │   ├── nifi_client.py   #   client de l'API NiFi (jeton, verbes, révisions)
 │   └── nifi_flow.py     #   Level 3 — construction du flux d'ingestion
 ├── tests/               # tests unitaires

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -148,6 +149,20 @@ def _write_rejects(
 #: soit le retard accumulé.
 DEFAULT_BATCH_SIZE = 150
 
+#: Délai de grâce avant archivage, en minutes.
+#:
+#: Au Level 3, NiFi surveille la même zone d'atterrissage que le job batch et la
+#: recense toutes les 30 secondes. Archiver un fichier dès son ingestion crée une
+#: course : archivé avant recensement, il disparaît du chemin streaming sans
+#: laisser de trace ; archivé entre le recensement et le téléchargement, il
+#: produit un rejet qui n'en est pas un.
+#:
+#: Laisser mûrir les fichiers supprime la course sans renoncer à l'archivage
+#: exigé au §1.2. Le coût est nul aux niveaux inférieurs : les fichiers sont
+#: simplement archivés à la passe suivante, et les réingérer entre-temps est
+#: sans effet grâce au MERGE.
+DEFAULT_ARCHIVE_AFTER_MINUTES = int(os.getenv("WABA_ARCHIVE_AFTER_MINUTES", "10"))
+
 
 def _chunks(items: List[str], size: int):
     for start in range(0, len(items), size):
@@ -243,9 +258,8 @@ def run(
     countries: Optional[List[str]] = None,
     archive: bool = True,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    archive_after_minutes: int = DEFAULT_ARCHIVE_AFTER_MINUTES,
 ) -> List[DatasetOutcome]:
-    import os
-
     raw_bucket = os.getenv("BUCKET_RAW", "raw-landing")
     archive_bucket = os.getenv("BUCKET_ARCHIVE", "archive")
 
@@ -287,8 +301,17 @@ def run(
         # produirait des transactions pointant vers des comptes inexistants.
         # Les réingérer à chaque passe est sans effet grâce au MERGE.
         if archive and not spec.is_referential:
-            moved, failed = landing.archive(client, raw_bucket, archive_bucket, keys)
+            # Délai de grâce : un fichier tout juste déposé peut ne pas encore
+            # avoir été recensé par NiFi, qui surveille la même zone. Il sera
+            # archivé à la passe suivante — le réingérer entre-temps est sans
+            # effet grâce au MERGE.
+            murs = landing.older_than(client, raw_bucket, keys, archive_after_minutes)
+            en_attente = len(keys) - len(murs)
+            moved, failed = landing.archive(client, raw_bucket, archive_bucket, murs)
             outcome.archived = moved
+            if en_attente:
+                logger.info("%s : %d fichier(s) laissé(s) au chemin streaming (délai de %d min)",
+                            spec.name, en_attente, archive_after_minutes)
             if failed:
                 logger.warning("%s : %d fichier(s) non archivé(s)", spec.name, failed)
 
@@ -333,10 +356,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="nombre de fichiers lus par passe (défaut : %(default)s). "
                              "Borne la mémoire du driver quel que soit le retard accumulé "
                              "dans la zone d'atterrissage.")
+    parser.add_argument("--archive-after", type=int, metavar="MINUTES",
+                        default=DEFAULT_ARCHIVE_AFTER_MINUTES,
+                        help="délai de grâce avant archivage (défaut : %(default)s min). "
+                             "Au Level 3, NiFi surveille la même zone d'atterrissage : "
+                             "archiver un fichier avant qu'il ne l'ait recensé le ferait "
+                             "disparaître du chemin streaming sans laisser de trace.")
     parser.add_argument("--no-archive", action="store_true",
-                        help="ne pas déplacer les fichiers traités vers le bucket archive. "
-                             "Nécessaire au Level 3, où NiFi surveille la même zone "
-                             "d'atterrissage et où un archivage prématuré couperait le flux.")
+                        help="ne pas archiver du tout. Utile pour rejouer une ingestion "
+                             "sur les mêmes fichiers pendant une mise au point.")
     return parser
 
 
@@ -349,6 +377,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         countries=args.countries,
         archive=not args.no_archive,
         batch_size=args.batch_size,
+        archive_after_minutes=args.archive_after,
     )
     if not outcomes:
         print("\nAucun fichier à ingérer.\n")

@@ -744,3 +744,55 @@ avec fuseau, un horodatage décodé depuis un message Kafka ne l'est pas.
 instants décalés du fuseau de la machine de développement, et le partage batch/streaming
 serait faux d'une heure ou deux — sans la moindre erreur, juste des chiffres légèrement
 différents. Huit pays sur trois fuseaux : la question n'est pas théorique.
+
+### D40. Batch et streaming lisent la même zone : un délai de grâce, pas un interrupteur
+
+**Contexte.** Le §1.2 exige d'archiver les fichiers traités ; le §3.1 fait surveiller la même
+zone d'atterrissage par NiFi. Les deux chemins se disputent donc les mêmes objets, et
+l'énoncé ne dit rien de leur cohabitation.
+
+**Le conflit, précisément.** Le job batch archive dès l'ingestion, toutes les quinze minutes ;
+NiFi recense toutes les trente secondes. Un fichier archivé avant d'avoir été recensé
+disparaît du chemin streaming **sans laisser de trace** — aucune erreur, juste des événements
+qui n'arrivent jamais. Archivé entre le recensement et le téléchargement, il produit à
+l'inverse un rejet qui n'en est pas un, et pollue la file de rebut.
+
+**Alternative écartée.** Désactiver l'archivage au Level 3. C'était la solution la plus
+simple, et elle revenait à abandonner silencieusement une exigence du Level 1 dès qu'on
+active le niveau suivant — la zone d'atterrissage ne se viderait plus jamais.
+
+**Décision.** L'archivage est conservé, assorti d'un délai de grâce : un fichier n'est
+archivé qu'après dix minutes de présence. Le coût est nul aux niveaux inférieurs — les
+fichiers partent simplement à la passe suivante — et le rejeu de l'ingestion entre-temps est
+sans effet grâce au `MERGE`.
+
+**Conséquence assumée.** Le délai doit rester supérieur à la période de recensement de NiFi,
+et l'un ne connaît pas l'autre. C'est une coordination implicite, que le Level 4 rendra
+explicite : NiFi acquittera ce qu'il a lu, et l'archivage n'attendra plus un délai mais un
+accusé de réception. Le paramètre reste surchargeable, et le test de fumée vérifie qu'un
+fichier tout juste déposé survit à un passage du batch.
+
+### D41. Le filigrane doit couvrir l'étalement des données, pas le retard attendu
+
+**Contexte.** Les règles à fenêtre du Job 2 portent sur l'horodatage métier : une rafale se
+définit par cinq minutes vécues par le compte, pas par cinq minutes de traitement. Le
+filigrane a d'abord été dimensionné comme on le fait d'ordinaire — la tolérance au retard
+d'un événement, douze heures.
+
+**Mesure.** Le test de fumée a rejoué l'intégralité des topics et trouvé **deux rafales de
+plus** qu'à l'exécution précédente. Ce n'étaient pas des doublons — aucune alerte n'apparaît
+deux fois pour un même compte : la détection elle-même n'était pas déterministe.
+
+**Diagnostic.** Les fichiers rejoués couvrent trois jours. Un fichier daté du 29 mars arrivant
+après un fichier du 31 voit tous ses événements écartés comme tardifs, et le résultat dépend
+alors du découpage des micro-lots — invisible, puisque rien n'échoue.
+
+**Décision.** Le filigrane couvre l'étalement temporel complet du jeu rejoué, trois jours et
+non douze heures. L'état reste borné par cette durée, et il est négligeable ici — quelques
+milliers de clés.
+
+**Conséquence assumée.** C'est un paramètre de déploiement, pas une constante : en
+production, où un événement parvient au job quelques secondes après la transaction, quelques
+minutes suffiraient et l'état s'en trouverait d'autant plus léger. Ce qui compte est la
+règle de dimensionnement, que ce projet a apprise en la ratant : le filigrane se dimensionne
+sur le désordre réel de la source, pas sur le retard qu'on imagine.

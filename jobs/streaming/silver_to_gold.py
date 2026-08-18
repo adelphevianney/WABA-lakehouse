@@ -80,12 +80,20 @@ WINDOW_SLIDE = "1 minute"
 #:
 #: Ces règles portent sur le temps de l'événement, non sur celui de son arrivée :
 #: une rafale se définit par cinq minutes vécues par le compte, pas par cinq
-#: minutes de traitement. Le filigrane doit donc suivre l'horodatage métier, et
-#: être assez large pour couvrir l'étalement d'un fichier rejoué — une journée
-#: entière d'opérations peut arriver dans un même micro-lot. En production, où un
-#: événement Silver parvient au job quelques secondes après la transaction,
-#: quelques minutes suffiraient.
-WATERMARK = os.getenv("WABA_STREAM_WATERMARK", "12 hours")
+#: minutes de traitement. Le filigrane suit donc l'horodatage métier — et c'est
+#: précisément ce qui le rend délicat à dimensionner.
+#:
+#: Il doit couvrir **l'étalement temporel complet du jeu rejoué**, pas seulement
+#: le retard attendu d'un événement. Un fichier historique arrivant après un
+#: fichier plus récent verrait tous ses événements écartés comme tardifs, et la
+#: détection cesserait d'être déterministe : mesuré, un filigrane de douze heures
+#: sur trois jours de données faisait varier le nombre de rafales détectées d'une
+#: exécution à l'autre, selon le découpage des micro-lots.
+#:
+#: L'état reste borné par cette durée, et il est négligeable ici — quelques
+#: milliers de clés. En production, où un événement Silver parvient au job
+#: quelques secondes après la transaction, quelques minutes suffiraient.
+WATERMARK = os.getenv("WABA_STREAM_WATERMARK", "3 days")
 
 #: Part des encours d'un pays au-delà de laquelle les sorties nettes d'une
 #: fenêtre déclenchent une alerte de liquidité.

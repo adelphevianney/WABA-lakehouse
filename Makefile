@@ -142,6 +142,10 @@ stream-gold-once: ## Job 2 streaming — traite ce qui est disponible puis s'arr
 queries-l3: ## Requêtes du Level 3 : Lambda unifiée, alertes, rebut, fraîcheur
 	@bash scripts/queries_l1.sh level3
 
+.PHONY: smoke-l3
+smoke-l3: ## Vérifie NiFi -> Kafka -> Spark -> Iceberg, la DLQ et la requête Lambda
+	@bash scripts/smoke_l3.sh
+
 .PHONY: topics
 topics: ## Volumétrie des topics Kafka
 	$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh \
