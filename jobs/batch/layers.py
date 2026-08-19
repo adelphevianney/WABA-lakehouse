@@ -8,6 +8,7 @@ ajustement.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import List, Optional, Sequence
 
 from pyspark.sql import Column, DataFrame, SparkSession
@@ -122,6 +123,29 @@ def deduplicate(frame: DataFrame, key: str, order_by: Sequence[str]) -> DataFram
     )
 
 
+def restrict_window(frame: DataFrame, days: Optional[int], column: str) -> DataFrame:
+    """Ne conserve que les `days` derniers jours **présents dans la source**.
+
+    La borne est prise sur la donnée, non sur l'horloge : les jeux simulés
+    portent des dates passées, et une fenêtre glissante ancrée sur « maintenant »
+    ne retiendrait rien du tout.
+
+    C'est le mécanisme qui rend le médaillon calculable à volumétrie réelle. Le
+    jeu complet de l'annexe couvre 90 jours et 22 millions de lignes ; en mode
+    local, une reconstruction intégrale dépasse ce qu'un pilote de 2 Go absorbe.
+    Recalculer la fenêtre récente et laisser l'historique tel qu'il a été produit
+    est de toute façon ce que fait un médaillon en exploitation — un recalcul
+    complet est une opération exceptionnelle, pas le régime nominal.
+    """
+    if not days or column not in frame.columns:
+        return frame
+    borne = frame.select(F.max(column)).first()[0]
+    if borne is None:
+        return frame
+    depuis = borne - timedelta(days=int(days))
+    return frame.filter(F.col(column) >= F.lit(depuis))
+
+
 def evolve_schema(spark: SparkSession, identifier: str, expected) -> List[str]:
     """Ajoute à une table existante les colonnes qu'elle ne porte pas encore.
 
@@ -166,9 +190,18 @@ def create_table(
         "CREATE TABLE IF NOT EXISTS {identifier} (\n    {columns}\n)\n"
         "USING iceberg\nPARTITIONED BY ({partitioning})\n"
         "TBLPROPERTIES ('format-version' = '2', "
-        "'write.parquet.compression-codec' = 'zstd')".format(
+        "'write.parquet.compression-codec' = 'zstd', "
+        # Redistribue les lignes par partition avant l'écriture. Sans cela,
+        # chaque tâche peut toucher toutes les partitions à la fois et ouvrir
+        # autant d'écrivains — 8 pays sur 90 jours en font 720, dont les tampons
+        # suffisent à épuiser le tas du pilote. C'est cette explosion en éventail,
+        # et non la jointure, qui faisait tomber le MERGE à volumétrie réelle.
+        "'write.distribution-mode' = 'hash')".format(
             identifier=identifier, columns=columns, partitioning=partitioning
         )
+    )
+    spark.sql(
+        "ALTER TABLE {} SET TBLPROPERTIES ('write.distribution-mode' = 'hash')".format(identifier)
     )
     evolve_schema(spark, identifier, declared)
     return identifier

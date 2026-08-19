@@ -851,3 +851,41 @@ un volume et l'utiliser sont deux choses différentes, et seule l'exécution le 
 tient en une ligne — recréer le conteneur, puis compter les topics. Onze avant, onze après.
 Aucun test ne le couvrait ; c'est une inspection manuelle qui l'a trouvé, et c'est la limite
 d'une suite de tests qui ne redémarre jamais l'infrastructure.
+
+### D44. Le médaillon se recalcule sur une fenêtre, pas sur tout l'historique
+
+**Contexte.** La génération du jeu complet de l'annexe — 90 jours, 22 millions de lignes en
+couche brute — a fait tomber la reconstruction Silver en `OutOfMemoryError`. La plateforme
+avait été validée sur le jeu de démonstration, seize mille lignes par table.
+
+**Deux causes, de natures différentes.**
+
+La première est un réglage devenu faux. `spark.sql.shuffle.partitions` avait été fixé à 8
+pour éviter que le défaut de 200 ne produise des centaines de fichiers Parquet minuscules.
+Le raisonnement valait sur des lots réduits ; sur 3,6 millions de lignes, 8 partitions font
+tenir un demi-million de lignes par tâche, et en mode local — où les exécuteurs *sont* le
+pilote — 2 Go de tas n'y suffisent pas. La bonne réponse n'est pas un autre nombre fixe :
+l'exécution adaptive regroupe les partitions **après** le mélange en visant une taille cible.
+Un nombre élevé déclaré, ramené par AQE, donne les deux comportements.
+
+La seconde est l'explosion en éventail à l'écriture. Huit pays sur quatre-vingt-dix jours
+font 720 partitions Iceberg ; sans redistribution préalable, une tâche peut toutes les
+toucher et ouvrir autant d'écrivains, dont les tampons épuisent le tas. `write.distribution-mode
+= hash` redistribue par partition avant d'écrire. C'est cette explosion, et non la jointure,
+qui faisait tomber le `MERGE`.
+
+**Décision.** Les jobs Silver et Gold acceptent une fenêtre de recalcul, exprimée en jours de
+données **présents dans la source** — et non relative à l'horloge, les jeux simulés portant
+des dates passées. Sept jours par défaut, surchargeable par paramètre Airflow, et
+`--window-days 0` reconstruit tout.
+
+**Conséquence assumée.** La couche brute conserve l'intégralité de l'historique ; seules
+Silver et Gold sont bornées. C'est de toute façon le régime nominal d'un médaillon en
+exploitation — un recalcul intégral est une opération exceptionnelle, pas la routine d'un
+ordonnanceur. Mesuré au volume réel : Silver reconstruit 1,68 million de lignes en 4 min,
+Gold ses sept tables en 1 min 32, NPL conforme sur 8 pays et loss ratio sur 76 couples.
+
+**Ce que cela ne résout pas.** Une reconstruction complète des 22 millions de lignes reste
+hors de portée de ce déploiement. Ce n'est pas un défaut de la chaîne mais de son mode
+d'exécution : Spark en local sur un poste de 16 Go partagé avec le reste de la stack. C'est
+exactement ce que le Level 4 adresse en soumettant les jobs à un cluster.

@@ -56,6 +56,23 @@ COUNTRY_PARAM = Param(
 
 _COUNTRY_FLAG = "{% if params.countries %}--countries {{ params.countries | join(' ') }}{% endif %}"
 
+#: Fenêtre de recalcul du médaillon, en jours de données.
+#:
+#: La couche brute conserve tout l'historique — 22 millions de lignes sur le jeu
+#: complet de l'annexe. Reconstruire Silver et Gold sur cette profondeur dépasse
+#: ce qu'un pilote Spark en mode local absorbe : la fenêtre borne chaque
+#: exécution planifiée à la période récente, et un recalcul intégral reste
+#: possible à la demande, par `--window-days 0`.
+WINDOW_PARAM = Param(
+    default=7,
+    type="integer",
+    minimum=0,
+    title="Fenêtre de recalcul (jours)",
+    description="Nombre de jours de données à recalculer. 0 reconstruit tout l'historique.",
+)
+
+_WINDOW_FLAG = "--window-days {{ params.get('window_days', 7) }}"
+
 
 def alerte_echec(context: Dict[str, Any]) -> None:
     """Trace un échec de tâche sous une forme exploitable.
@@ -107,7 +124,13 @@ CATALOG_POOL = "waba_catalogue"
 
 def spark_job(task_id: str, module: str, extra_args: str = "", **kwargs: Any) -> DockerOperator:
     """Tâche exécutant un module de `jobs.batch` dans un conteneur Spark éphémère."""
-    command = " ".join(part for part in ("python3 -m", module, _COUNTRY_FLAG, extra_args) if part)
+    parts = ["python3 -m", module, _COUNTRY_FLAG]
+    # Seuls les jobs du médaillon acceptent une fenêtre : l'ingestion traite ce
+    # qui se présente, et le rapport réglementaire porte déjà sa propre date.
+    if module in ("jobs.batch.silver", "jobs.batch.gold"):
+        parts.append(_WINDOW_FLAG)
+    parts.append(extra_args)
+    command = " ".join(part for part in parts if part)
     kwargs.setdefault("pool", CATALOG_POOL)
 
     return DockerOperator(

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -53,8 +54,25 @@ class GoldOutcome:
         return self.error is None
 
 
+#: Fenêtre de recalcul, partagée avec la couche Silver : recalculer Gold sur un
+#: horizon plus large que celui que Silver vient de reconstruire produirait des
+#: agrégats mêlant deux millésimes de règles métier.
+DEFAULT_WINDOW_DAYS: Optional[int] = int(os.getenv("WABA_MEDALLION_WINDOW_DAYS", "7")) or None
+
+#: Colonne portant la date métier dans les tables Silver transactionnelles. Les
+#: référentiels n'en ont pas : `restrict_window` les laisse alors intacts.
+EVENT_TIME = "timestamp"
+
+#: Fenêtre courante, posée par `run()` avant de construire les tables. Un
+#: paramètre supplémentaire sur chacune des sept fonctions de construction
+#: n'aurait rien apporté : elles lisent toutes Silver par `_silver`.
+_WINDOW: Optional[int] = DEFAULT_WINDOW_DAYS
+
+
 def _silver(spark: SparkSession, table: str, countries: Optional[List[str]]) -> DataFrame:
-    frame = layers.read(spark, table, layers.SILVER_NAMESPACE)
+    frame = layers.restrict_window(
+        layers.read(spark, table, layers.SILVER_NAMESPACE), _WINDOW, EVENT_TIME
+    )
     if countries:
         frame = frame.filter(F.col("country_code").isin(countries))
     return frame
@@ -364,7 +382,10 @@ BY_NAME: Dict[str, GoldTable] = {table.name: table for table in TABLES}
 def run(
     tables: Optional[List[str]] = None,
     countries: Optional[List[str]] = None,
+    window_days: Optional[int] = DEFAULT_WINDOW_DAYS,
 ) -> List[GoldOutcome]:
+    global _WINDOW
+    _WINDOW = window_days
     selected = [BY_NAME[name] for name in tables] if tables else TABLES
     spark = build_session("waba-gold")
 
@@ -411,6 +432,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tables", nargs="*", choices=sorted(BY_NAME),
                         help="KPIs à recalculer (défaut : tous)")
+    parser.add_argument("--window-days", type=int, default=DEFAULT_WINDOW_DAYS,
+                        metavar="N",
+                        help="ne recalculer que les N derniers jours présents dans Silver "
+                             "(défaut : %(default)s). 0 reconstruit tout.")
     parser.add_argument("--countries", nargs="*", metavar="CC",
                         help="restreindre à certains pays, pour un recalcul sélectif")
     return parser
@@ -419,7 +444,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s — %(message)s")
     args = build_parser().parse_args(argv)
-    outcomes = run(tables=args.tables, countries=args.countries)
+    outcomes = run(tables=args.tables, countries=args.countries,
+                   window_days=args.window_days or None)
     _render(outcomes)
     return 0 if all(outcome.ok for outcome in outcomes) else 1
 

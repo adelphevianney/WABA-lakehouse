@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -55,6 +56,16 @@ logger = logging.getLogger("jobs.silver")
 #: aberrants. Le barème du groupe est de 0,1 % ; 5 % relève de l'anomalie de
 #: saisie ou du bug de facturation, pas de la tarification.
 MAX_FEE_RATIO = 0.05
+
+#: Fenêtre de recalcul, en jours de données, ou None pour tout reconstruire.
+#:
+#: Le jeu complet de l'annexe couvre 90 jours et 22 millions de lignes en couche
+#: brute. En mode local, une reconstruction intégrale dépasse ce qu'un pilote de
+#: 2 Go absorbe. Recalculer la fenêtre récente et laisser l'historique tel qu'il
+#: a été produit est de toute façon le régime nominal d'un médaillon : un
+#: recalcul complet est une opération exceptionnelle, qu'on déclenche
+#: explicitement par `--window-days 0`.
+DEFAULT_WINDOW_DAYS: Optional[int] = int(os.getenv("WABA_MEDALLION_WINDOW_DAYS", "7")) or None
 
 
 @dataclass
@@ -442,10 +453,14 @@ def build_loan_repayments(
 @dataclass
 class SilverTable:
     name: str
-    builder: Callable[[SparkSession, Optional[List[str]]], DataFrame]
+    builder: Callable[..., DataFrame]
     key: str
     partitioning: str
     outlier_column: Optional[str] = None
+    #: Colonne portant la date métier, sur laquelle s'applique la fenêtre de
+    #: recalcul. Nulle pour les référentiels : ce sont des états courants, pas
+    #: des flux, et les borner reviendrait à en perdre la majeure partie.
+    event_time: Optional[str] = None
 
 
 #: Les référentiels précèdent les flux : ces derniers s'y joignent.
@@ -453,13 +468,13 @@ TABLES: List[SilverTable] = [
     SilverTable("customers", build_customers, "customer_id", "country_code"),
     SilverTable("accounts", build_accounts, "account_id", "country_code"),
     SilverTable("bank_transactions", build_bank_transactions, "transaction_id",
-                "country_code, days(timestamp)", "frais_aberrants"),
+                "country_code, days(timestamp)", "frais_aberrants", event_time="timestamp"),
     SilverTable("insurance_operations", build_insurance_operations, "operation_id",
-                "country_code, days(timestamp)", "delai_manquant"),
+                "country_code, days(timestamp)", "delai_manquant", event_time="timestamp"),
     SilverTable("mobile_money_payments", build_mobile_money_payments, "payment_id",
-                "country_code, days(timestamp)", "origine_inhabituelle"),
+                "country_code, days(timestamp)", "origine_inhabituelle", event_time="timestamp"),
     SilverTable("loan_repayments", build_loan_repayments, "repayment_id",
-                "country_code, days(timestamp)", "surpaiement"),
+                "country_code, days(timestamp)", "surpaiement", event_time="timestamp"),
 ]
 
 BY_NAME: Dict[str, SilverTable] = {table.name: table for table in TABLES}
@@ -468,6 +483,7 @@ BY_NAME: Dict[str, SilverTable] = {table.name: table for table in TABLES}
 def run(
     tables: Optional[List[str]] = None,
     countries: Optional[List[str]] = None,
+    window_days: Optional[int] = DEFAULT_WINDOW_DAYS,
 ) -> List[SilverOutcome]:
     selected = [BY_NAME[name] for name in tables] if tables else TABLES
     spark = build_session("waba-silver")
@@ -477,11 +493,12 @@ def run(
         started = time.perf_counter()
         outcome = SilverOutcome(table=table.name)
         try:
-            frame = table.builder(spark, countries).cache()
+            source = layers.restrict_window(
+                layers.read(spark, table.name), window_days, table.event_time or "",
+            )
+            frame = table.builder(spark, countries, source=source).cache()
             outcome.rows_out = frame.count()
-            outcome.rows_in = _restrict(
-                layers.read(spark, table.name), countries
-            ).count()
+            outcome.rows_in = _restrict(source, countries).count()
             outcome.duplicates = outcome.rows_in - outcome.rows_out
             if table.outlier_column:
                 outcome.outliers = frame.filter(F.col(table.outlier_column)).count()
@@ -532,13 +549,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="tables à reconstruire (défaut : toutes)")
     parser.add_argument("--countries", nargs="*", metavar="CC",
                         help="restreindre à certains pays, pour un retraitement sélectif")
+    parser.add_argument("--window-days", type=int, default=DEFAULT_WINDOW_DAYS,
+                        metavar="N",
+                        help="ne recalculer que les N derniers jours présents dans la "
+                             "source (défaut : %(default)s). 0 reconstruit tout, ce que "
+                             "le volume complet de l'annexe ne permet pas en mode local.")
     return parser
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s — %(message)s")
     args = build_parser().parse_args(argv)
-    outcomes = run(tables=args.tables, countries=args.countries)
+    outcomes = run(tables=args.tables, countries=args.countries,
+                   window_days=args.window_days or None)
     _render(outcomes)
     return 0 if all(outcome.ok for outcome in outcomes) else 1
 

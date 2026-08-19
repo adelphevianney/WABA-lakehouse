@@ -17,6 +17,7 @@ from airflow.decorators import dag
 
 from waba_common import (
     COUNTRY_PARAM,
+    WINDOW_PARAM,
     DEFAULT_ARGS,
     LAKEHOUSE_GOLD,
     LAKEHOUSE_SILVER,
@@ -32,7 +33,7 @@ from waba_common import (
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
-    params={"countries": COUNTRY_PARAM},
+    params={"countries": COUNTRY_PARAM, "window_days": WINDOW_PARAM},
     tags=["waba", "level2", "gold"],
 )
 def silver_to_gold():
