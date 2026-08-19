@@ -828,3 +828,26 @@ fait, chacune réclamant 2 Go sur une machine de 16.
 un catalogue adossé à PostgreSQL les rendrait tous deux inutiles. C'est la limite de fond :
 SQLite a été choisi pour sa légèreté, et ce choix se paie en concurrence. Le Level 4 le
 remplacera ; d'ici là, la contrainte est explicite et documentée plutôt que subie.
+
+### D43. Un volume monté n'est pas un volume utilisé
+
+**Contexte.** Le broker Kafka déclarait un volume nommé sur `/var/lib/kafka/data`, par symétrie
+avec les autres services. Une inspection de routine a montré ce répertoire **vide**, et les
+segments de journaux dans `/tmp`.
+
+**Ce qui rend la panne dangereuse.** Elle est parfaitement silencieuse. Tant que le conteneur
+vit, tout fonctionne : les topics existent, les messages s'accumulent, les tests passent. La
+perte n'apparaît qu'au premier `down`, c'est-à-dire au pire moment — celui où l'on démontre
+qu'une plateforme redémarre proprement. En mode KRaft, l'identité même du cluster suivait le
+même chemin et n'était pas davantage persistée.
+
+**Décision.** `KAFKA_LOG_DIRS` pointe explicitement sur le volume. Le chemin existe déjà dans
+l'image, en `appuser:root` : le volume nommé en hérite à son premier montage, et le broker
+peut y écrire sans conteneur d'initialisation — contrairement au catalogue Iceberg, dont le
+répertoire était absent de l'image.
+
+**Conséquence assumée.** Le correctif ne se vérifie pas en lisant la configuration : monter
+un volume et l'utiliser sont deux choses différentes, et seule l'exécution le dit. Le contrôle
+tient en une ligne — recréer le conteneur, puis compter les topics. Onze avant, onze après.
+Aucun test ne le couvrait ; c'est une inspection manuelle qui l'a trouvé, et c'est la limite
+d'une suite de tests qui ne redémarre jamais l'infrastructure.

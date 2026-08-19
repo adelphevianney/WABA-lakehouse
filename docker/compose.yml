@@ -419,6 +419,12 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Sans cette ligne, le broker écrit dans /tmp : le volume monté plus bas
+      # reste vide et les topics disparaissent au premier `down`. La panne est
+      # silencieuse — tout fonctionne tant que le conteneur vit. En mode KRaft,
+      # les métadonnées du cluster suivent le même chemin, si bien que c'est
+      # aussi l'identité du cluster qui n'était pas persistée.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
       # Tas plafonné : le défaut de Kafka vise un broker de production, alors
       # que la mémoire est ici la ressource contrainte du niveau.
       KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
