@@ -77,12 +77,28 @@ def build_session(app_name: str = "waba-batch") -> SparkSession:
         # machine : huit pays sur trois fuseaux, et un décalage silencieux
         # fausserait tous les agrégats journaliers.
         .config("spark.sql.session.timeZone", "UTC")
-        # Le défaut de 200 partitions de mélange produirait, en mode local sur
-        # des lots de quelques milliers de lignes, des centaines de fichiers
-        # Parquet de quelques kilo-octets par écriture.
-        .config("spark.sql.shuffle.partitions", os.getenv("SPARK_SHUFFLE_PARTITIONS", "8"))
+        # Nombre de partitions de mélange.
+        #
+        # Il avait d'abord été fixé à 8 pour éviter que le défaut de 200 ne
+        # produise des centaines de fichiers Parquet de quelques kilo-octets sur
+        # des lots réduits. Le raisonnement était juste sur le jeu de
+        # démonstration et faux dès qu'on change d'échelle : sur 7,3 millions de
+        # lignes, 8 partitions font tenir près d'un million de lignes par tâche,
+        # et en mode local — où les exécuteurs *sont* le pilote — le tas de 2 Go
+        # n'y suffit pas. C'est ainsi que la reconstruction Silver est tombée en
+        # `OutOfMemoryError`.
+        #
+        # La bonne réponse n'est pas un autre nombre fixe : l'exécution adaptive
+        # regroupe les partitions **après** le mélange, en visant une taille
+        # cible. Déclarer un nombre élevé et laisser AQE le ramener à ce qu'il
+        # faut donne les deux comportements — des tâches bornées sur un gros
+        # volume, peu de fichiers sur un petit.
+        .config("spark.sql.shuffle.partitions", os.getenv("SPARK_SHUFFLE_PARTITIONS", "64"))
         .config("spark.driver.memory", os.getenv("SPARK_DRIVER_MEMORY", "2g"))
         .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.sql.adaptive.advisoryPartitionSizeInBytes",
+                os.getenv("SPARK_ADVISORY_PARTITION_SIZE", "64MB"))
     )
 
     session = builder.getOrCreate()
