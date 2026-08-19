@@ -89,9 +89,26 @@ DEFAULT_ARGS: Dict[str, Any] = {
 }
 
 
+#: Pool à un seul emplacement, partagé par toutes les tâches Spark.
+#:
+#: Le catalogue Iceberg de ce déploiement persiste ses métadonnées dans un
+#: SQLite, qui n'accepte qu'un écrivain à la fois. `max_active_runs` sérialise
+#: les exécutions d'un même DAG, mais deux DAGs distincts peuvent commiter
+#: simultanément — et un verrou dans le pilote Spark n'y peut rien, chaque tâche
+#: tournant dans son propre conteneur. Le pool est le seul endroit où la
+#: contrainte s'exprime à l'échelle de l'ordonnanceur.
+#:
+#: La conséquence est assumée : les tâches Spark s'exécutent en série. Sur cette
+#: machine elles le faisaient déjà de fait, chaque conteneur réclamant 2 Go. Un
+#: catalogue adossé à PostgreSQL accepterait les écritures concurrentes et
+#: rendrait ce pool inutile — c'est le déploiement que vise le Level 4.
+CATALOG_POOL = "waba_catalogue"
+
+
 def spark_job(task_id: str, module: str, extra_args: str = "", **kwargs: Any) -> DockerOperator:
     """Tâche exécutant un module de `jobs.batch` dans un conteneur Spark éphémère."""
     command = " ".join(part for part in ("python3 -m", module, _COUNTRY_FLAG, extra_args) if part)
+    kwargs.setdefault("pool", CATALOG_POOL)
 
     return DockerOperator(
         task_id=task_id,

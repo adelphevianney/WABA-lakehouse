@@ -117,9 +117,20 @@ services:
       # Le catalogue JDBC ouvre une transaction en lecture puis la promeut en
       # écriture, ce que WAL refuse dès qu'une autre connexion a écrit
       # entre-temps — SQLITE_BUSY_SNAPSHOT, sur lequel aucun délai d'attente
-      # n'a de prise. Les écritures concurrentes sont donc sérialisées côté
-      # client (voir jobs/streaming/iceberg_sink.py) ; un catalogue adossé à
-      # PostgreSQL les accepterait nativement, ce que fera le Level 4.
+      # n'a de prise.
+      #
+      # Piège à connaître : le mode journal est inscrit **dans le fichier**, pas
+      # dans la chaîne de connexion. L'avoir activé une fois le rend permanent,
+      # et le retirer d'ici ne le désactive pas. Rétablir le journal classique
+      # sur une base déjà basculée demande, service arrêté :
+      #   PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;
+      #
+      # Les écritures concurrentes sont sérialisées de deux façons, chacune à sa
+      # portée : un verrou dans le pilote Spark pour les flux d'un même processus
+      # (jobs/streaming/iceberg_sink.py), un pool Airflow à un emplacement pour
+      # les tâches batch, qui tournent chacune dans son propre conteneur. Un
+      # catalogue adossé à PostgreSQL accepterait ces écritures nativement et
+      # rendrait les deux inutiles — c'est le déploiement que vise le Level 4.
       CATALOG_URI: jdbc:sqlite:file:/persist/waba_catalog.db?busy_timeout=30000
       CATALOG_WAREHOUSE: ${ICEBERG_WAREHOUSE:-s3://lakehouse/}
       CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
@@ -324,6 +335,15 @@ services:
         airflow db migrate
         airflow users create --username admin --password ${AIRFLOW_ADMIN_PASSWORD:-admin} \
           --firstname WABA --lastname Admin --role Admin --email admin@waba.local || true
+        # Un seul emplacement : toutes les tâches Spark écrivent dans le même
+        # catalogue Iceberg, dont le backend SQLite n'accepte qu'un écrivain.
+        # `max_active_runs` sérialise les exécutions d'un même DAG, mais rien
+        # n'empêche deux DAGs différents de commiter en même temps — et un
+        # verrou dans le pilote Spark ne peut rien, chaque tâche tournant dans
+        # son propre conteneur. Le pool est le seul point où la contrainte
+        # s'exprime pour l'ensemble de l'ordonnanceur.
+        airflow pools set ${AIRFLOW_CATALOG_POOL:-waba_catalogue} 1 \
+          "Écritures dans le catalogue Iceberg — un écrivain à la fois"
         echo "Airflow initialisé"
     restart: "no"
     networks: [waba]

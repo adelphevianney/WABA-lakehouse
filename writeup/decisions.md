@@ -796,3 +796,35 @@ production, où un événement parvient au job quelques secondes après la trans
 minutes suffiraient et l'état s'en trouverait d'autant plus léger. Ce qui compte est la
 règle de dimensionnement, que ce projet a apprise en la ratant : le filigrane se dimensionne
 sur le désordre réel de la source, pas sur le retard qu'on imagine.
+
+### D42. Le mode journal de SQLite vit dans le fichier, pas dans la connexion
+
+**Contexte.** Après la mise en service des DAGs, les quatre ont échoué. La trace remontait à
+`ServiceFailureException: 500` du catalogue, et sous elle, `SQLITE_BUSY_SNAPSHOT`.
+
+**Ce qui rend le diagnostic intéressant.** Ce code d'erreur est **propre au journal WAL** — or
+la configuration ne l'activait plus depuis plusieurs jours : le paramètre avait été retiré de
+la chaîne de connexion après l'avoir mesuré nuisible (cf. D33). Il était pourtant toujours
+actif.
+
+`PRAGMA journal_mode=WAL` inscrit le mode **dans l'en-tête du fichier de base**, où il
+survit à toute reconnexion. Retirer le paramètre de la configuration ne le désactive pas : il
+n'empêche que de le réactiver. La correction précédente n'avait donc jamais pris effet, et
+rien ne le signalait — les tests passaient parce que le verrou du pilote Spark masquait le
+problème tant que les écritures venaient d'un seul processus.
+
+**Décision.** Rétablissement explicite du journal classique, service arrêté :
+`PRAGMA wal_checkpoint(TRUNCATE)` puis `PRAGMA journal_mode=DELETE`. Le point de contrôle
+n'est pas facultatif — le fichier principal ne pesait que 32 Ko quand le WAL en contenait
+778, soit l'essentiel des métadonnées des 34 tables.
+
+**Et la cause de fond.** Les tâches Airflow s'exécutent chacune dans son propre conteneur :
+le verrou du pilote Spark, qui protégeait les flux d'un même processus, n'a aucune prise sur
+elles. Un **pool Airflow à un emplacement** exprime la contrainte là où elle vaut pour tout
+l'ordonnanceur. Les tâches Spark s'exécutent donc en série — ce qu'elles faisaient déjà de
+fait, chacune réclamant 2 Go sur une machine de 16.
+
+**Conséquence assumée.** Deux mécanismes de sérialisation coexistent, chacun à sa portée, et
+un catalogue adossé à PostgreSQL les rendrait tous deux inutiles. C'est la limite de fond :
+SQLite a été choisi pour sa légèreté, et ce choix se paie en concurrence. Le Level 4 le
+remplacera ; d'ici là, la contrainte est explicite et documentée plutôt que subie.

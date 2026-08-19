@@ -258,6 +258,14 @@ une déclaration réglementaire manquée reste due.
 pour dupliquer un environnement existant ; surtout, ce découplage est celui que le Level 4 reprendra
 en remplaçant `DockerOperator` par `SparkKubernetesOperator`.
 
+**Une seule écriture de catalogue à la fois.** Toutes les tâches Spark passent par un *pool*
+Airflow d'un seul emplacement. Le catalogue Iceberg persiste ses métadonnées dans un SQLite,
+qui n'accepte qu'un écrivain : `max_active_runs` sérialise les exécutions d'un même DAG, mais
+deux DAGs distincts peuvent commiter en même temps, et chaque tâche tournant dans son propre
+conteneur, aucun verrou applicatif n'a de prise sur elles. Le pool est le seul point où la
+contrainte s'exprime à l'échelle de l'ordonnanceur — un catalogue PostgreSQL le rendrait
+inutile, ce que vise le Level 4.
+
 **Aucun identifiant dans le code des DAGs.** Les accès MinIO sont déclarés comme une *Connection*
 Airflow et référencés par `{{ conn.waba_minio.login }}`, résolu à l'exécution de la tâche. Les
 paramètres d'environnement passent par des *Variables*. Chaque DAG accepte un paramètre `countries`
