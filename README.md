@@ -258,6 +258,15 @@ une déclaration réglementaire manquée reste due.
 pour dupliquer un environnement existant ; surtout, ce découplage est celui que le Level 4 reprendra
 en remplaçant `DockerOperator` par `SparkKubernetesOperator`.
 
+**Le médaillon se recalcule sur une fenêtre.** La couche brute conserve tout l'historique — 22
+millions de lignes sur le jeu complet de l'annexe. Reconstruire Silver et Gold à cette
+profondeur dépasse ce qu'un pilote Spark en mode local absorbe. Chaque exécution planifiée est
+donc bornée aux **7 derniers jours de données présents dans la source** (paramètre
+`window_days` du DAG, ou `--window-days`), un recalcul intégral restant possible avec
+`--window-days 0`. C'est de toute façon le régime nominal d'un médaillon : un recalcul complet
+est une opération exceptionnelle, pas la routine d'un ordonnanceur. Mesuré au volume réel :
+Silver reconstruit 1,68 M de lignes en 4 min, Gold ses sept tables en 1 min 32.
+
 **Une seule écriture de catalogue à la fois.** Toutes les tâches Spark passent par un *pool*
 Airflow d'un seul emplacement. Le catalogue Iceberg persiste ses métadonnées dans un SQLite,
 qui n'accepte qu'un écrivain : `max_active_runs` sérialise les exécutions d'un même DAG, mais
