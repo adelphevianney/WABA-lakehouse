@@ -50,7 +50,7 @@ flowchart LR
 | **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | ✅ Complet — générateur, ingestion Spark, 8 tables `raw.*` idempotentes |
 | **Level 2** | Orchestration Airflow & architecture Médaillon | ✅ Complet — médaillon Bronze/Silver/Gold, 7 KPIs, 4 DAGs chaînés par Datasets |
 | **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | ✅ Complet — NiFi → Kafka, 2 jobs streaming, DLQ, requête Lambda unifiée, 10 contrôles de fumée |
-| **Level 4** | Kubernetes, gouvernance & observabilité | ⬜ À venir |
+| **Level 4** | Kubernetes, gouvernance & observabilité | 🟡 Superset et ses 3 tableaux de bord opérationnels — Helm, SSO, catalogue et observabilité en cours |
 
 ---
 
@@ -91,6 +91,7 @@ Interfaces exposées :
 | **Générateur (Streamlit)** | http://localhost:8501 | aucun (dev local) |
 | **Airflow** (profil `l2`) | http://localhost:8090 | `admin` / cf. `.env` |
 | **NiFi** (profil `l3`) | https://localhost:8091/nifi | cf. `.env` — certificat auto-signé |
+| **Superset** (profil `l4`) | http://localhost:8088 | `admin` / cf. `.env` |
 | Console MinIO | http://localhost:9001 | ceux du `.env` |
 | Trino | http://localhost:8080 | aucun (dev local) |
 | Catalogue Iceberg REST | http://localhost:8181 | — |
@@ -476,6 +477,29 @@ l'oracle du générateur les retrouve dans les fichiers d'origine, l'AML publie 
 franchissements de seuil, la requête Lambda ne compte pas deux fois — vérifié en
 consolidant puis en exigeant que la vue temps réel soit vide —, un fichier fraîchement
 déposé survit à un passage du batch, et rejouer l'intégralité des topics ne duplique rien.
+
+## Le Level 4 : visualisation
+
+```bash
+make up-l4        # toute la plateforme + Superset
+make dashboards   # construit les 3 tableaux de bord du §4.2
+```
+
+Superset se connecte à Trino en SQLAlchemy et sert trois tableaux de bord, **construits par
+script** comme le flux NiFi — [`scripts/superset_dashboards.py`](scripts/superset_dashboards.py).
+Chaque graphique y tient en une dizaine de lignes déclaratives, là où un export Superset est
+une archive de YAML généré illisible en revue.
+
+| Tableau de bord | Contenu |
+|---|---|
+| **Performance Commerciale** | revenus par pays et ligne métier, carte de contribution, ARPC mensuel, produits souscrits |
+| **Risque & Conformité** | NPL par pays (seuil BCEAO 5 %), loss ratio par branche (seuil CIMA 70 %), déclarations AML, délais sinistres vs SLA |
+| **Mobile Money** | carte de chaleur pays × heure, corridors transfrontaliers, taux d'échec par opérateur |
+
+Les seuils affichés viennent de `common.domain` : les tableaux ne redéfinissent pas les
+valeurs que les jobs appliquent. Chacun porte un filtre **Pays** qui s'applique à tous ses
+graphiques. Les onze graphiques renvoient des données réelles — vérifié par l'API de données,
+de 5 à 96 lignes selon la maille.
 
 ## Contrainte mémoire — pourquoi des profils
 

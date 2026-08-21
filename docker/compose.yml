@@ -510,6 +510,93 @@ services:
     mem_limit: 2g
     networks: [waba]
 
+  # ---------------------------------------------------------------------------
+  # Level 4.2 — Visualisation
+  # ---------------------------------------------------------------------------
+  # Base de métadonnées des services de gouvernance. Superset, Keycloak et, plus
+  # tard, OpenMetadata y logent chacun sa base : un serveur pour trois, parce
+  # qu'un PostgreSQL par service coûterait près d'un gigaoctet sur une machine
+  # où la mémoire est la ressource contrainte.
+  governance-db:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: waba-governance-db
+    profiles: ["l4"]
+    environment:
+      POSTGRES_USER: ${GOVERNANCE_DB_USER:-waba}
+      POSTGRES_PASSWORD: ${GOVERNANCE_DB_PASSWORD:?}
+      POSTGRES_DB: governance
+      GOVERNANCE_DATABASES: superset keycloak
+    volumes:
+      - governance-db:/var/lib/postgresql/data
+      - ./postgres/init-governance.sh:/docker-entrypoint-initdb.d/10-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${GOVERNANCE_DB_USER:-waba} -d governance"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 512m
+    networks: [waba]
+
+  # Migration du schéma et création du compte d'administration. Conteneur
+  # one-shot, au même titre que `airflow-init`.
+  superset-init:
+    build:
+      context: ..
+      dockerfile: docker/superset/Dockerfile
+    image: waba/superset:${WABA_VERSION:-dev}
+    container_name: waba-superset-init
+    profiles: ["l4"]
+    depends_on:
+      governance-db:
+        condition: service_healthy
+    environment: &superset-env
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:?la clé de signature Superset doit être définie}
+      SUPERSET_DATABASE_URI: >-
+        postgresql+psycopg2://${GOVERNANCE_DB_USER:-waba}:${GOVERNANCE_DB_PASSWORD:?}@governance-db/superset
+      # Adresse de Trino vue depuis le réseau Compose, et identifiants du
+      # catalogue. La source de données est enregistrée par script, jamais
+      # saisie à la main : c'est ce qui rend les tableaux de bord rejouables.
+      WABA_TRINO_URI: trino://${TRINO_USER:-waba}@trino:8080/iceberg
+      SUPERSET_ADMIN: ${SUPERSET_ADMIN:-admin}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+      TZ: ${TZ:-UTC}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        superset db upgrade
+        superset fab create-admin --username "$${SUPERSET_ADMIN}" \
+          --firstname WABA --lastname Admin --email admin@waba.local \
+          --password "$${SUPERSET_ADMIN_PASSWORD}" || true
+        superset init
+        echo "Superset initialisé"
+    restart: "no"
+    networks: [waba]
+
+  superset:
+    image: waba/superset:${WABA_VERSION:-dev}
+    container_name: waba-superset
+    profiles: ["l4"]
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+      trino:
+        condition: service_healthy
+    environment: *superset-env
+    ports:
+      - "${SUPERSET_PORT:-8088}:8088"
+    command: ["gunicorn", "--bind", "0.0.0.0:8088", "--workers", "2",
+              "--timeout", "120", "--limit-request-line", "0",
+              "--limit-request-field_size", "0", "superset.app:create_app()"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8088/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    mem_limit: 1500m
+    networks: [waba]
+
 volumes:
   minio-data:
   iceberg-catalog:
@@ -517,6 +604,7 @@ volumes:
   airflow-logs:
   kafka-data:
   spark-checkpoints:
+  governance-db:
 
 networks:
   waba:

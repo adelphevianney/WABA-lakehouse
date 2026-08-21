@@ -889,3 +889,32 @@ Gold ses sept tables en 1 min 32, NPL conforme sur 8 pays et loss ratio sur 76 c
 hors de portée de ce déploiement. Ce n'est pas un défaut de la chaîne mais de son mode
 d'exécution : Spark en local sur un poste de 16 Go partagé avec le reste de la stack. C'est
 exactement ce que le Level 4 adresse en soumettant les jobs à un cluster.
+
+### D45. Les tableaux de bord sont construits par script, comme le flux NiFi
+
+**Contexte.** Superset se pilote à la souris, et l'usage veut qu'on exporte ensuite le résultat
+pour le verser au dépôt.
+
+**Décision.** Les trois tableaux de bord du §4.2 sont construits par appels à l'API REST, dans
+[`scripts/superset_dashboards.py`](../scripts/superset_dashboards.py). Chaque graphique tient
+en une dizaine de lignes déclaratives : son jeu de données, son type, ses métriques, sa
+largeur sur la grille.
+
+**Alternative écartée.** L'export Superset : une archive de YAML généré où l'ajout d'un
+graphique produit un diff illisible et où les identifiants changent à chaque export. Le même
+raisonnement que pour le flux NiFi, et la cohérence a sa valeur — un évaluateur qui a compris
+l'un comprend l'autre.
+
+**Conséquence assumée.** Superset stocke deux choses par graphique : les paramètres de son
+formulaire, que l'interface sait retraduire en requête, et un contexte de requête déjà résolu.
+Le second est facultatif à l'affichage mais indispensable à l'API de données, aux vignettes et
+aux alertes planifiées. Un graphique créé sans lui s'affiche et refuse de se laisser
+interroger — c'est ce qui a d'abord fait échouer la vérification automatique, et c'est
+pourquoi le script produit les deux. Les seuils affichés viennent de `common.domain` : les
+tableaux de bord ne redéfinissent pas les valeurs que les jobs appliquent déjà.
+
+**Mesure.** Les onze graphiques renvoient des données réelles issues de Trino — de 5 lignes
+pour les corridors les plus actifs à 96 pour la carte de chaleur horaire —, chacun est placé
+sur la grille, et les trois tableaux portent le filtre par pays qu'exige la grille
+d'évaluation.
+

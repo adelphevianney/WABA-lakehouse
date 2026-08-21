@@ -13,7 +13,7 @@ param(
         'ingest-l1', 'compact-l1', 'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1',
         'smoke-l1', 'smoke-l2', 'queries-l2', 'up-l3', 'down-l3', 'nifi-flow',
         'nifi-status', 'nifi-replay', 'topics', 'stream-silver', 'stream-silver-once',
-        'stream-gold', 'stream-gold-once', 'queries-l3', 'smoke-l3',
+        'stream-gold', 'stream-gold-once', 'queries-l3', 'smoke-l3', 'up-l4', 'down-l4', 'dashboards',
         'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
@@ -93,6 +93,11 @@ switch ($Command) {
         Write-Host '    stream-gold-once   Job 2 : traite l''existant puis s''arrête'
         Write-Host '    queries-l3         Requête Lambda unifiée, alertes, rebut, fraîcheur'
         Write-Host '    smoke-l3           Vérifie NiFi -> Kafka -> Spark -> Iceberg et la DLQ'
+        Write-Host ''
+        Write-Host '    -- Level 4 --------------------------------------------------'
+        Write-Host '    up-l4        Démarre le Level 4 (toute la plateforme + Superset)'
+        Write-Host '    down-l4      Arrête le Level 4 (données conservées)'
+        Write-Host '    dashboards   (Re)construit les 3 tableaux de bord Superset'
         Write-Host ''
         Write-Host '    ps         Consommation mémoire des conteneurs'
         Write-Host '    logs <svc> Suit les logs d''un service'
@@ -208,6 +213,17 @@ switch ($Command) {
     'queries-l3' { & bash "$PSScriptRoot/scripts/queries_l1.sh" level3 }
 
     'smoke-l3' { & bash "$PSScriptRoot/scripts/smoke_l3.sh" }
+
+    'up-l4' {
+        Initialize-Env
+        Invoke-Compose @('--profile', 'l4', 'up', '-d', '--wait', '--build')
+        Write-Host ''
+        Write-Host "  Superset : http://localhost:$(Get-EnvValue 'SUPERSET_PORT' '8088')" -ForegroundColor Green
+    }
+
+    'down-l4' { Invoke-Compose @('--profile', 'l4', 'down') }
+
+    'dashboards' { & python "$PSScriptRoot\scripts\superset_dashboards.py" }
 
     'ps' { docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' }
 

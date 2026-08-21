@@ -151,6 +151,24 @@ topics: ## Volumétrie des topics Kafka
 	$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh \
 		--bootstrap-server kafka:9092 --topic-partitions '.*'
 
+# --- Level 4 : visualisation et gouvernance ------------------------------------
+
+.PHONY: up-l4
+up-l4: env ## Démarre le Level 4 (toute la plateforme + Superset)
+	$(COMPOSE) --profile l4 up -d --wait --build
+	@echo ""
+	@echo "  Superset : http://localhost:$${SUPERSET_PORT:-8088}"
+
+.PHONY: down-l4
+down-l4: ## Arrête le Level 4 (les données sont conservées)
+	$(COMPOSE) --profile l4 down
+
+# Les tableaux de bord sont construits par l'API depuis la machine hôte, comme
+# le flux NiFi : le script n'utilise que la bibliothèque standard.
+.PHONY: dashboards
+dashboards: ## (Re)construit les 3 tableaux de bord Superset du §4.2
+	@python3 scripts/superset_dashboards.py
+
 # --- Exploitation --------------------------------------------------------------
 
 .PHONY: ps
