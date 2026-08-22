@@ -85,8 +85,13 @@ groups:
             relativeTimeRange: {from: 300, to: 0}
             datasourceUid: waba-prometheus
             model:
+              # Seuls les trois jeux qui ont un topic Silver entrent dans le
+              # calcul : l'énoncé n'en prévoit pas pour les remboursements de
+              # crédit, et les compter côté brut sans contrepartie côté Silver
+              # créerait un écart structurel que le traitement ne résorberait
+              # jamais — l'alerte finirait par sonner en permanence.
               expr: >-
-                sum(kafka_topic_partition_current_offset{topic=~"raw-.*"})
+                sum(kafka_topic_partition_current_offset{topic=~"raw-(bank-transactions|insurance-operations|mobile-money-payments)"})
                 - sum(kafka_topic_partition_current_offset{topic=~"silver-.*"})
               instant: true
               refId: RETARD

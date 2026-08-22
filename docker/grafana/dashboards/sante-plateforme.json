@@ -66,14 +66,14 @@
       "id": 4,
       "type": "timeseries",
       "title": "Retard du traitement streaming",
-      "description": "Écart entre ce que NiFi a publié dans les topics bruts et ce que le Job 1 a produit dans les topics Silver. Le décalage des groupes de consommateurs n'est pas disponible : Spark gère ses offsets dans son point de reprise et ne les valide pas auprès du broker. Mesuré depuis le broker, cet écart dit la même chose — le travail restant à absorber.",
+      "description": "Écart entre ce que NiFi a publié dans les topics bruts et ce que le Job 1 a produit dans les topics Silver. Le décalage des groupes de consommateurs n'est pas disponible : Spark gère ses offsets dans son point de reprise et ne les valide pas auprès du broker. Mesuré depuis le broker, cet écart dit la même chose — le travail restant à absorber. Seuls les trois jeux ayant un topic Silver sont comptés : les remboursements de crédit n'en ont pas, et les inclure créerait un écart que rien ne résorberait.",
       "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 9},
       "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 20}}},
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(kafka_topic_partition_current_offset{topic=~\"raw-.*\"}) - sum(kafka_topic_partition_current_offset{topic=~\"silver-.*\"})",
+          "expr": "sum(kafka_topic_partition_current_offset{topic=~\"raw-(bank-transactions|insurance-operations|mobile-money-payments)\"}) - sum(kafka_topic_partition_current_offset{topic=~\"silver-.*\"})",
           "legendFormat": "messages en attente"
         }
       ]

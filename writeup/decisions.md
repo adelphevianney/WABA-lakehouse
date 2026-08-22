@@ -975,3 +975,23 @@ lendemain matin — plus strict que ce qui était demandé.
 l'exploitant le lira au moment où l'alerte sonne, et non seulement dans ce document. Une
 alerte dont on ignore ce qu'elle mesure ne vaut pas mieux qu'une alerte absente.
 
+### D48. Une alerte se vérifie dans les deux sens
+
+**Contexte.** La grille exige que les trois alertes « aient été déclenchées au moins une fois
+en démo ». Provoquer un déclenchement suffit à cocher la case.
+
+**Ce que la vérification complète a révélé.** Après avoir fait monter le retard à 30 834
+messages et vu l'alerte passer par `pending` puis `firing`, le traitement a été relancé — et
+le retard s'est stabilisé à 8 834 au lieu de retomber à zéro. L'énoncé ne prévoit pas de topic
+Silver pour les remboursements de crédit : les compter côté brut sans contrepartie créait un
+écart structurel que rien ne pouvait résorber. L'alerte aurait fini par sonner en permanence,
+et une alerte qui sonne toujours ne dit plus rien.
+
+**Décision.** Le calcul ne retient que les trois jeux de données appariés. Vérifié dans les
+deux sens : déclenchement à 30 834, retour au repos à 24 — les vingt-quatre restants étant les
+marqueurs de transaction du producteur NiFi, qui occupent un offset sans porter de message.
+
+**Conséquence assumée.** Une alerte ne se teste pas en la faisant sonner, mais en la faisant
+sonner **puis se taire**. Le second mouvement est celui qui révèle les biais de la métrique,
+et c'est celui qu'on oublie.
+
