@@ -613,8 +613,21 @@ swap=8GB
 │   ├── nifi_client.py   #   client de l'API NiFi (jeton, verbes, révisions)
 │   └── nifi_flow.py     #   Level 3 — construction du flux d'ingestion
 ├── tests/               # tests unitaires
-└── writeup/             # write-up technique (rédigé au fil de l'eau)
+└── writeup/
+    ├── write-up.md      #   le livrable : 4 pages de synthèse
+    └── decisions.md     #   annexe : 50 décisions, contexte et alternatives
 ```
+
+## Write-up technique
+
+[`writeup/write-up.md`](writeup/write-up.md) — quatre pages : l'architecture, cinq décisions
+structurantes, ce que la contrainte de seize gigaoctets a imposé, les limites connues, et ce
+que je referais autrement.
+
+Il s'appuie sur [`writeup/decisions.md`](writeup/decisions.md), le journal tenu au fil de
+l'eau : cinquante décisions, chacune avec son contexte, l'alternative écartée et la conséquence
+assumée. Les deux sont en Markdown, format explicitement accepté par l'énoncé, et versionnés —
+un PDF se relit mais ne se compare pas d'une version à l'autre.
 
 ## Sécurité & données personnelles
 
