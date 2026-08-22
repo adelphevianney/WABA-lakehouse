@@ -1,0 +1,179 @@
+{
+  "uid": "waba-sante",
+  "title": "WABA — Santé des pipelines",
+  "description": "Vue d'exploitation de la plateforme : débit d'ingestion, retard du bus, activité du moteur de requêtes et journaux applicatifs. Level 4.4 du challenge.",
+  "tags": ["waba", "observabilite"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "topic",
+        "label": "Topic",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
+        "query": "label_values(kafka_topic_partition_current_offset, topic)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {"text": "All", "value": "$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Ingestion — NiFi et Kafka",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Débit NiFi — événements publiés",
+      "description": "Flowfiles envoyés par les processeurs du flux d'ingestion, dérivés en événements par seconde. C'est la mesure du débit demandée au §4.4.",
+      "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 1},
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 10}}},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(nifi_amount_flowfiles_sent{component_type=\"ProcessGroup\"}[5m]))",
+          "legendFormat": "événements/s"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Volume des topics Kafka",
+      "description": "Dernier offset par topic. La pente donne le débit de publication ; un palier sur un topic silver-* signale un job de streaming arrêté.",
+      "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 1},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 0}}},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (topic) (kafka_topic_partition_current_offset{topic=~\"$topic\", topic!~\"__.*\"})",
+          "legendFormat": "{{topic}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Retard du traitement streaming",
+      "description": "Écart entre ce que NiFi a publié dans les topics bruts et ce que le Job 1 a produit dans les topics Silver. Le décalage des groupes de consommateurs n'est pas disponible : Spark gère ses offsets dans son point de reprise et ne les valide pas auprès du broker. Mesuré depuis le broker, cet écart dit la même chose — le travail restant à absorber.",
+      "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 9},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 20}}},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(kafka_topic_partition_current_offset{topic=~\"raw-.*\"}) - sum(kafka_topic_partition_current_offset{topic=~\"silver-.*\"})",
+          "legendFormat": "messages en attente"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Files d'attente NiFi",
+      "description": "Contenu retenu dans les files du flux. Une valeur qui monte durablement signale une contre-pression, donc un broker qui n'absorbe plus.",
+      "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 9},
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(nifi_size_content_queued_total{component_type=\"ProcessGroup\"})",
+          "legendFormat": "octets en file"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Traitement — Airflow et Trino",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 17}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Durée des exécutions de DAG",
+      "description": "Airflow n'expose pas de métriques Prometheus : il émet du StatsD, traduit par un exportateur. La série n'apparaît qu'après la première exécution d'un DAG.",
+      "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 18},
+      "fieldConfig": {"defaults": {"unit": "ms"}},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "airflow_dagrun_duration_seconds{quantile=\"0.5\"}",
+          "legendFormat": "{{dag_id}} ({{etat}})"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Échecs de tâches Airflow",
+      "description": "Taux d'échec cumulé des tâches. C'est le signal qu'un DAG ne passe plus, quelle qu'en soit la cause.",
+      "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 18},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 20}}},
+      "targets": [
+        {"refId": "A", "expr": "airflow_ti_failures", "legendFormat": "échecs de tâche"},
+        {"refId": "B", "expr": "airflow_ti_successes", "legendFormat": "succès de tâche"}
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Requêtes Trino",
+      "description": "Requêtes en cours et cumul des requêtes échouées. Superset, les tests de fumée et les requêtes analytiques passent tous par ce coordinateur.",
+      "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 26},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {"refId": "A", "expr": "trino_execution_name_QueryManager_RunningQueries", "legendFormat": "en cours"},
+        {"refId": "B", "expr": "trino_execution_name_QueryManager_FailedQueries_TotalCount", "legendFormat": "échouées (cumul)"}
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Composants collectés",
+      "description": "Cibles Prometheus actives. La cible Spark n'est présente que pendant l'exécution d'un job de streaming : un job batch, éphémère, ne vit pas assez longtemps pour être collecté.",
+      "datasource": {"type": "prometheus", "uid": "waba-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 26},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [{"type": "value", "options": {"0": {"text": "hors ligne", "color": "red"}, "1": {"text": "collecté", "color": "green"}}}]
+        }
+      },
+      "targets": [{"refId": "A", "expr": "up", "legendFormat": "{{job}}"}]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Journaux applicatifs",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 34}
+    },
+    {
+      "id": 21,
+      "type": "logs",
+      "title": "Erreurs des jobs Spark",
+      "description": "Les jobs Spark préfixent leurs lignes du niveau et du module ; Promtail en extrait deux étiquettes, ce qui rend le journal filtrable sans recherche plein texte.",
+      "datasource": {"type": "loki", "uid": "waba-loki"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 35},
+      "options": {"showTime": true, "sortOrder": "Descending", "wrapLogMessage": true},
+      "targets": [
+        {"refId": "A", "expr": "{composant=~\"spark|airflow-scheduler\"} |~ \"(?i)error|exception|échec\""}
+      ]
+    }
+  ]
+}

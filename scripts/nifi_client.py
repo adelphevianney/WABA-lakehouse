@@ -125,6 +125,20 @@ class NiFiClient:
             detail = exc.read().decode()[:300]
             raise NiFiError("{} {} → {} : {}".format(method, path, exc.code, detail)) from exc
 
+    def request_brut(self, method: str, path: str) -> str:
+        """Réponse non décodée, pour ce qui n'est pas du JSON.
+
+        Les métriques Prometheus sont du texte : les passer par `json.loads`
+        échouerait sur la première ligne.
+        """
+        req = urllib.request.Request(self.base_url + path, method=method,
+                                     headers=self._headers())
+        try:
+            with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=60) as response:
+                return response.read().decode()
+        except urllib.error.HTTPError as exc:
+            raise NiFiError("{} {} → {}".format(method, path, exc.code)) from exc
+
     def get(self, path: str) -> Any:
         return self.request("GET", path)
 

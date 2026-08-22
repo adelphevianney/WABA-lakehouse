@@ -296,6 +296,13 @@ services:
     environment: &airflow-env
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Airflow n'expose pas de métriques Prometheus : il émet du StatsD, qu'un
+      # exportateur traduit (Level 4.4). Les émettre en permanence ne coûte rien
+      # quand personne n'écoute — le protocole est en UDP, sans connexion.
+      AIRFLOW__METRICS__STATSD_ON: "true"
+      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+      AIRFLOW__METRICS__STATSD_PORT: "9125"
+      AIRFLOW__METRICS__STATSD_PREFIX: airflow
       # Les DAGs sont déployés en pause. Démarrer la plateforme ne doit pas
       # déclencher immédiatement toute la chaîne de traitement : l'exploitant
       # active ce qu'il veut, quand il le veut.
@@ -469,6 +476,13 @@ services:
   nifi:
     image: ${NIFI_IMAGE:-apache/nifi:2.2.0}
     container_name: waba-nifi
+    # NiFi génère son certificat auto-signé pour `localhost` et pour le nom
+    # d'hôte du conteneur — par défaut un identifiant aléatoire, renouvelé à
+    # chaque recréation. Jetty vérifiant le nom présenté en SNI, un appel à
+    # `https://nifi:8443` depuis le réseau Compose se voyait refusé par un
+    # « Invalid SNI » peu explicite. Un nom d'hôte fixe le fait entrer dans le
+    # certificat.
+    hostname: nifi
     profiles: ["l3", "l4"]
     depends_on:
       kafka:
@@ -597,6 +611,152 @@ services:
     mem_limit: 1500m
     networks: [waba]
 
+  # ---------------------------------------------------------------------------
+  # Level 4.4 — Observabilité
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.1.0}
+    container_name: waba-prometheus
+    profiles: ["l4"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Quinze jours suffisent à une démonstration et bornent le volume ; en
+      # production, la rétention longue relèverait d'un stockage distant.
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      # Le fichier de configuration référence ${TRINO_USER} : sans expansion,
+      # Prometheus prendrait la chaîne littérale pour un nom d'utilisateur.
+      - --config.auto-reload-interval=30s
+    environment:
+      TRINO_USER: ${TRINO_USER:-waba}
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    mem_limit: 512m
+    networks: [waba]
+
+  # Le décalage des consommateurs Kafka n'est pas exposé par le broker : cet
+  # exportateur l'obtient en parlant le protocole Kafka, comme un consommateur.
+  kafka-exporter:
+    image: ${KAFKA_EXPORTER_IMAGE:-danielqsj/kafka-exporter:v1.9.0}
+    container_name: waba-kafka-exporter
+    profiles: ["l4"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: ["--kafka.server=kafka:9092", "--web.listen-address=:9308"]
+    mem_limit: 128m
+    networks: [waba]
+
+  # Airflow n'émet que du StatsD ; l'exportateur traduit ses compteurs en
+  # métriques Prometheus.
+  statsd-exporter:
+    image: ${STATSD_EXPORTER_IMAGE:-prom/statsd-exporter:v0.28.0}
+    container_name: waba-statsd-exporter
+    profiles: ["l4"]
+    command:
+      - --statsd.mapping-config=/etc/statsd/mapping.yml
+      - --statsd.listen-udp=:9125
+      - --web.listen-address=:9102
+    volumes:
+      - ./statsd:/etc/statsd:ro
+    mem_limit: 128m
+    networks: [waba]
+
+  # NiFi 2 protège ses métriques par jeton et n'a plus de tâche de rapport
+  # ouvrant un port dédié : cet adaptateur maintient un jeton valide et sert les
+  # métriques à Prometheus. Voir scripts/nifi_exporter.py.
+  nifi-exporter:
+    image: ${PYTHON_IMAGE:-python:3.12-alpine}
+    container_name: waba-nifi-exporter
+    profiles: ["l4"]
+    depends_on:
+      nifi:
+        condition: service_healthy
+    environment:
+      NIFI_URL: https://nifi:8443/nifi-api
+      NIFI_USERNAME: ${NIFI_USERNAME:-waba_admin}
+      NIFI_PASSWORD: ${NIFI_PASSWORD:?}
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../scripts:/app/scripts:ro
+    command: ["python", "-m", "scripts.nifi_exporter"]
+    mem_limit: 128m
+    networks: [waba]
+
+  loki:
+    image: ${LOKI_IMAGE:-grafana/loki:3.3.2}
+    container_name: waba-loki
+    profiles: ["l4"]
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki:/etc/loki:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3100/ready | grep -q ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    mem_limit: 512m
+    networks: [waba]
+
+  promtail:
+    image: ${PROMTAIL_IMAGE:-grafana/promtail:3.3.2}
+    container_name: waba-promtail
+    profiles: ["l4"]
+    depends_on:
+      loki:
+        condition: service_healthy
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./promtail:/etc/promtail:ro
+      # Lecture seule sur le socket : Promtail découvre les conteneurs et lit
+      # leurs journaux, il n'a rien à démarrer.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 256m
+    networks: [waba]
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.5.1}
+    container_name: waba-grafana
+    profiles: ["l4"]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Aucun accès anonyme : le tableau de bord de santé expose la volumétrie
+      # et le comportement de la plateforme.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_DEFAULT_THEME: light
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/health | grep -q ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    mem_limit: 512m
+    networks: [waba]
+
 volumes:
   minio-data:
   iceberg-catalog:
@@ -605,6 +765,9 @@ volumes:
   kafka-data:
   spark-checkpoints:
   governance-db:
+  prometheus-data:
+  loki-data:
+  grafana-data:
 
 networks:
   waba:

@@ -918,3 +918,60 @@ pour les corridors les plus actifs à 96 pour la carte de chaleur horaire —, c
 sur la grille, et les trois tableaux portent le filtre par pays qu'exige la grille
 d'évaluation.
 
+### D46. Chaque composant expose ses métriques autrement, et c'est le travail
+
+**Contexte.** Le §4.4 demande que Prometheus collecte « les métriques des composants critiques
+via des exporters ou annotations K8s ». La phrase suppose une uniformité qui n'existe pas.
+
+**Ce qu'il a fallu faire, composant par composant.**
+
+*Trino* sert nativement de l'OpenMetrics, mais exige une identité même sans authentification
+configurée — un en-tête `X-Trino-User` que Prometheus ne sait pas poser. L'authentification
+basique le satisfait, le mot de passe étant ignoré tant qu'aucun authentificateur n'est
+déclaré.
+
+*Kafka* n'expose pas le décalage des consommateurs : un exportateur l'obtient en parlant le
+protocole du broker, comme le ferait un consommateur.
+
+*Airflow* n'émet que du StatsD, et encode ses dimensions dans le **nom** de la métrique —
+`airflow.dagrun.duration.success.dag_ingest_raw` plutôt qu'une métrique étiquetée. Un fichier
+de correspondance rétablit les étiquettes, sans quoi chaque DAG produirait sa propre série,
+impossible à agréger.
+
+*NiFi 2* a supprimé la tâche de rapport qui, en 1.x, ouvrait un port dédié sans
+authentification ; son point de terminaison Prometheus est désormais derrière le même jeton
+que le reste de l'API, et ce jeton expire. Prometheus ne sait présenter qu'un jeton statique
+lu dans un fichier. Un adaptateur d'une trentaine de lignes maintient un jeton valide et sert
+les métriques sur le réseau interne — cela vaut mieux qu'un jeton recopié à la main toutes les
+douze heures.
+
+**Conséquence assumée.** Cinq mécanismes différents pour cinq composants. C'est le coût réel
+de l'observabilité d'une plateforme hétérogène, et il est rarement chiffré dans les
+présentations d'architecture.
+
+### D47. Deux alertes sur trois mesurent autre chose que ce que l'énoncé nomme
+
+**Contexte.** L'énoncé demande trois alertes précises : job Spark fraude en erreur depuis plus
+de cinq minutes, consommateur Kafka AML avec un décalage supérieur à 5 000 messages, et DAG du
+rapport réglementaire en échec à J+1 06h00 UTC.
+
+**Ce que la plateforme permet réellement de mesurer.**
+
+Le **décalage par groupe de consommateurs n'existe pas** : Spark gère ses offsets dans son
+point de reprise et ne les valide pas auprès du broker, si bien qu'aucun groupe n'apparaît
+côté Kafka. L'alerte mesure donc l'écart entre ce qui est publié dans les topics bruts et ce
+qui ressort en Silver. C'est le même travail restant, vu depuis le broker plutôt que depuis le
+consommateur.
+
+Le **job en erreur** est détecté par ses journaux et non par une métrique : un job Spark qui
+échoue cesse d'exposer ses métriques, et une absence de série ne distingue pas un job en panne
+d'un job à l'arrêt. La trace d'erreur, elle, dit ce qui s'est produit.
+
+L'alerte **à heure fixe** n'a pas d'équivalent : Grafana évalue en continu et ne planifie pas.
+La règle surveille l'échec lui-même, ce qui se déclenche dès la panne au lieu d'attendre le
+lendemain matin — plus strict que ce qui était demandé.
+
+**Conséquence assumée.** Chaque écart est écrit dans la description de la règle, là où
+l'exploitant le lira au moment où l'alerte sonne, et non seulement dans ce document. Une
+alerte dont on ignore ce qu'elle mesure ne vaut pas mieux qu'une alerte absente.
+

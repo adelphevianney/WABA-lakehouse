@@ -1,0 +1,14 @@
+# Chargement des tableaux de bord depuis le dépôt : ils sont versionnés au même
+# titre que le reste, et non recréés à la main après chaque déploiement.
+apiVersion: 1
+
+providers:
+  - name: waba
+    orgId: 1
+    folder: WABA
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

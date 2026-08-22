@@ -1,0 +1,144 @@
+# Les trois alertes du §4.4, déclarées plutôt que cliquées.
+#
+# Chacune reprend l'intention de l'énoncé ; deux d'entre elles s'appuient sur une
+# métrique différente de celle qu'il suggère, et la raison est notée dans la
+# description de la règle — c'est là que l'exploitant la lira.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: waba-pipelines
+    folder: WABA
+    interval: 1m
+    rules:
+      # ---------------------------------------------------------------------
+      # 1. Job de streaming de fraude en erreur depuis plus de 5 minutes.
+      #
+      # L'énoncé vise « le job Spark fraude en erreur > 5 min ». La détection
+      # passe par les journaux plutôt que par une métrique : un job Spark qui
+      # échoue cesse d'exposer ses métriques, et une absence de série ne
+      # distingue pas un job en panne d'un job à l'arrêt. La trace d'erreur,
+      # elle, dit exactement ce qui s'est produit.
+      # ---------------------------------------------------------------------
+      - uid: waba-fraude-en-erreur
+        title: Job de détection de fraude en erreur
+        condition: SEUIL
+        for: 5m
+        labels:
+          severite: critique
+          domaine: streaming
+        annotations:
+          summary: Le job de détection de fraude signale des erreurs depuis 5 minutes
+          description: >-
+            Des lignes de niveau ERROR remontent du job silver_to_gold. Les règles
+            de fraude, la surveillance AML et les alertes de liquidité ne sont plus
+            produites. Vérifier les journaux du conteneur Spark et le point de
+            reprise du flux.
+        data:
+          - refId: JOURNAL
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: waba-loki
+            model:
+              expr: 'sum(count_over_time({composant="spark"} |~ "(?i)error|exception" [5m]))'
+              queryType: instant
+              refId: JOURNAL
+          - refId: SEUIL
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: JOURNAL
+              refId: SEUIL
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        # Sans série — aucun journal d'erreur — l'alerte est au repos, ce qui est
+        # le comportement voulu : pas de nouvelle est une bonne nouvelle.
+        noDataState: OK
+        execErrState: Alerting
+
+      # ---------------------------------------------------------------------
+      # 2. Retard du traitement AML au-delà de 5 000 messages.
+      #
+      # L'énoncé parle du « consumer Kafka AML avec lag > 5 000 messages ». Le
+      # décalage par groupe de consommateurs n'existe pas ici : Spark gère ses
+      # offsets dans son point de reprise et ne les valide pas auprès du broker,
+      # si bien qu'aucun groupe n'apparaît côté Kafka. L'écart entre ce qui est
+      # publié dans les topics bruts et ce qui ressort en Silver mesure le même
+      # travail restant, vu depuis le broker.
+      # ---------------------------------------------------------------------
+      - uid: waba-retard-aml
+        title: Retard du traitement AML supérieur à 5 000 messages
+        condition: SEUIL
+        for: 5m
+        labels:
+          severite: majeure
+          domaine: streaming
+        annotations:
+          summary: Le traitement temps réel accumule plus de 5 000 messages de retard
+          description: >-
+            L'écart entre les topics raw-* et silver-* dépasse 5 000 messages
+            depuis cinq minutes. Les déclarations AML et les alertes de fraude
+            portent sur des événements de plus en plus anciens. Vérifier que le
+            Job 1 tourne, et que le broker n'est pas saturé.
+        data:
+          - refId: RETARD
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: waba-prometheus
+            model:
+              expr: >-
+                sum(kafka_topic_partition_current_offset{topic=~"raw-.*"})
+                - sum(kafka_topic_partition_current_offset{topic=~"silver-.*"})
+              instant: true
+              refId: RETARD
+          - refId: SEUIL
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: RETARD
+              refId: SEUIL
+              conditions:
+                - evaluator: {type: gt, params: [5000]}
+        noDataState: NoData
+        execErrState: Alerting
+
+      # ---------------------------------------------------------------------
+      # 3. Rapport réglementaire en échec.
+      #
+      # L'énoncé demande une alerte « à J+1 06h00 UTC ». Grafana évalue en
+      # continu et ne planifie pas : la règle surveille donc l'échec lui-même,
+      # ce qui est plus fort qu'un contrôle à heure fixe — elle se déclenche dès
+      # la panne, sans attendre le lendemain matin.
+      # ---------------------------------------------------------------------
+      - uid: waba-rapport-reglementaire
+        title: Rapport réglementaire en échec
+        condition: SEUIL
+        for: 2m
+        labels:
+          severite: critique
+          domaine: reglementaire
+        annotations:
+          summary: Une tâche Airflow a échoué — la déclaration réglementaire est en risque
+          description: >-
+            Le compteur d'échecs de tâches Airflow a progressé. Le rapport
+            BCEAO/CIMA du jour peut être manquant : une déclaration omise reste
+            due. Vérifier dag_regulatory_report dans l'interface Airflow.
+        data:
+          - refId: ECHECS
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: waba-prometheus
+            model:
+              expr: 'increase(airflow_ti_failures[15m])'
+              instant: true
+              refId: ECHECS
+          - refId: SEUIL
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: ECHECS
+              refId: SEUIL
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        noDataState: OK
+        execErrState: Alerting

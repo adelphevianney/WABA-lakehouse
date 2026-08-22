@@ -50,7 +50,7 @@ flowchart LR
 | **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | ✅ Complet — générateur, ingestion Spark, 8 tables `raw.*` idempotentes |
 | **Level 2** | Orchestration Airflow & architecture Médaillon | ✅ Complet — médaillon Bronze/Silver/Gold, 7 KPIs, 4 DAGs chaînés par Datasets |
 | **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | ✅ Complet — NiFi → Kafka, 2 jobs streaming, DLQ, requête Lambda unifiée, 10 contrôles de fumée |
-| **Level 4** | Kubernetes, gouvernance & observabilité | 🟡 Superset et ses 3 tableaux de bord opérationnels — Helm, SSO, catalogue et observabilité en cours |
+| **Level 4** | Kubernetes, gouvernance & observabilité | 🟡 Superset (3 tableaux) et observabilité (Prometheus, Loki, Grafana, 3 alertes) opérationnels — Helm, SSO et catalogue en cours |
 
 ---
 
@@ -92,6 +92,8 @@ Interfaces exposées :
 | **Airflow** (profil `l2`) | http://localhost:8090 | `admin` / cf. `.env` |
 | **NiFi** (profil `l3`) | https://localhost:8091/nifi | cf. `.env` — certificat auto-signé |
 | **Superset** (profil `l4`) | http://localhost:8088 | `admin` / cf. `.env` |
+| **Grafana** (profil `l4`) | http://localhost:3000 | `admin` / cf. `.env` |
+| Prometheus | http://localhost:9090 | aucun (dev local) |
 | Console MinIO | http://localhost:9001 | ceux du `.env` |
 | Trino | http://localhost:8080 | aucun (dev local) |
 | Catalogue Iceberg REST | http://localhost:8181 | — |
@@ -500,6 +502,34 @@ Les seuils affichés viennent de `common.domain` : les tableaux ne redéfinissen
 valeurs que les jobs appliquent. Chacun porte un filtre **Pays** qui s'applique à tous ses
 graphiques. Les onze graphiques renvoient des données réelles — vérifié par l'API de données,
 de 5 à 96 lignes selon la maille.
+
+### Observabilité
+
+```bash
+make up-l4        # démarre aussi Prometheus, Loki, Grafana et les exportateurs
+```
+
+Grafana sur http://localhost:3000 sert le tableau de bord **Santé des pipelines** : débit
+NiFi, volume des topics, retard du traitement streaming, files de contre-pression, durée et
+échecs des DAGs, activité Trino, et les journaux d'erreur des jobs Spark.
+
+**Cinq mécanismes pour cinq composants**, parce qu'aucun n'expose ses métriques de la même
+façon :
+
+| Composant | Comment |
+|---|---|
+| Trino | OpenMetrics natif, derrière une authentification basique — il exige une identité même sans authentificateur configuré |
+| Kafka | exportateur parlant le protocole du broker |
+| Airflow | StatsD, retraduit en métriques étiquetées par un fichier de correspondance |
+| NiFi | adaptateur maison — NiFi 2 a supprimé la tâche de rapport et protège son endpoint par un jeton qui expire |
+| Spark | servlet Prometheus du pilote, présent seulement pendant l'exécution d'un job de streaming |
+
+**Trois alertes**, déclarées dans [`docker/grafana/provisioning/alerting/`](docker/grafana/provisioning/alerting) :
+job de détection de fraude en erreur depuis 5 minutes, retard du traitement supérieur à 5 000
+messages, et échec de tâche menaçant le rapport réglementaire. Deux d'entre elles mesurent
+autre chose que ce que l'énoncé nomme — le décalage par groupe de consommateurs n'existe pas,
+Spark ne validant pas ses offsets auprès du broker — et **l'écart est écrit dans la
+description de chaque règle**, là où l'exploitant le lira au moment où elle sonne.
 
 ## Contrainte mémoire — pourquoi des profils
 

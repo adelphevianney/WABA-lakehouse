@@ -1,0 +1,44 @@
+# Collecte des journaux applicatifs vers Loki (Level 4.4).
+#
+# Promtail lit les journaux que Docker écrit sur l'hôte et les étiquette avec le
+# nom du service Compose. Sans cette étiquette, tous les journaux de la
+# plateforme se confondraient en un seul flux.
+server:
+  http_listen_port: 9080
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: conteneurs
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      # Ne collecter que les conteneurs de la plateforme : le poste de travail
+      # en fait tourner d'autres, sans rapport.
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/waba-.*"
+        action: keep
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: service
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: composant
+    pipeline_stages:
+      # Les jobs Spark préfixent leurs lignes du niveau et du module :
+      # « INFO jobs.streaming.raw_to_silver — ... ». Extraire ces deux champs
+      # rend le journal filtrable par niveau et par job dans Grafana, ce que la
+      # recherche plein texte ne permet pas.
+      - match:
+          selector: '{composant="spark"}'
+          stages:
+            - regex:
+                expression: '^(?P<niveau>DEBUG|INFO|WARNING|ERROR)\s+(?P<module>[\w.]+)\s+'
+            - labels:
+                niveau:
+                module:

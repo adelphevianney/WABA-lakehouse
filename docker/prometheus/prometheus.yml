@@ -1,0 +1,63 @@
+# Collecte des métriques de la plateforme (Level 4.4).
+#
+# Chaque composant expose ses métriques d'une manière différente, et c'est le
+# principal travail de ce fichier : Trino sert nativement de l'OpenMetrics,
+# Kafka passe par un exportateur qui interroge le protocole du broker, Airflow
+# parle StatsD, et NiFi protège son point de terminaison par un jeton — d'où
+# l'adaptateur qui le renouvelle.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    plateforme: waba
+
+scrape_configs:
+  # Trino sert /metrics nativement, mais exige une identité même sans
+  # authentification configurée : l'en-tête X-Trino-User, que Prometheus ne sait
+  # pas poser. L'authentification basique le satisfait, le mot de passe étant
+  # ignoré tant qu'aucun authentificateur n'est déclaré.
+  - job_name: trino
+    metrics_path: /metrics
+    basic_auth:
+      username: ${TRINO_USER}
+      password: ""
+    static_configs:
+      - targets: ["trino:8080"]
+        labels: {composant: serving}
+
+  # Le décalage des consommateurs Kafka — indicateur central du §4.4 — n'est pas
+  # exposé par le broker en Prometheus : cet exportateur l'obtient en parlant le
+  # protocole Kafka, comme le ferait un consommateur.
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+        labels: {composant: ingestion}
+
+  # Airflow n'émet que du StatsD ; l'exportateur traduit ces compteurs en
+  # métriques Prometheus, en dérivant les étiquettes du nom de la métrique.
+  - job_name: airflow
+    static_configs:
+      - targets: ["statsd-exporter:9102"]
+        labels: {composant: processing}
+
+  - job_name: nifi
+    static_configs:
+      - targets: ["nifi-exporter:9103"]
+        labels: {composant: ingestion}
+
+  # Les jobs Spark de streaming exposent le servlet Prometheus de Spark sur le
+  # port de leur interface de pilote. Un job batch, éphémère, ne vit pas assez
+  # longtemps pour être collecté : son suivi passe par Airflow.
+  - job_name: spark
+    static_configs:
+      - targets: ["spark:4040"]
+        labels: {composant: processing}
+    metrics_path: /metrics/prometheus
+    # Le pilote n'écoute que pendant l'exécution d'un job : une cible
+    # injoignable est ici une information, pas une panne.
+    honor_labels: true
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels: {composant: monitoring}
