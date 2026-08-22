@@ -13,7 +13,7 @@ param(
         'ingest-l1', 'compact-l1', 'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1',
         'smoke-l1', 'smoke-l2', 'queries-l2', 'up-l3', 'down-l3', 'nifi-flow',
         'nifi-status', 'nifi-replay', 'topics', 'stream-silver', 'stream-silver-once',
-        'stream-gold', 'stream-gold-once', 'queries-l3', 'smoke-l3', 'up-l4', 'down-l4', 'dashboards', 'k8s-render', 'k8s-up', 'k8s-status', 'k8s-down',
+        'stream-gold', 'stream-gold-once', 'queries-l3', 'smoke-l3', 'up-l4', 'down-l4', 'dashboards', 'k8s-render', 'k8s-up', 'k8s-status', 'k8s-down', 'demo-reset',
         'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
@@ -102,6 +102,7 @@ switch ($Command) {
         Write-Host '    k8s-up       Deploie toute la plateforme sur le cluster courant'
         Write-Host '    k8s-status   Etat des pods de la plateforme'
         Write-Host '    k8s-down     Supprime la plateforme du cluster'
+        Write-Host '    demo-reset   Remet la plateforme en etat de demonstration'
         Write-Host ''
         Write-Host '    ps         Consommation mémoire des conteneurs'
         Write-Host '    logs <svc> Suit les logs d''un service'
@@ -243,6 +244,8 @@ switch ($Command) {
     'k8s-status' {
         & kubectl get pods -A -l app.kubernetes.io/part-of=waba -o custom-columns='NAMESPACE:.metadata.namespace,POD:.metadata.name,ETAT:.status.phase,PRET:.status.containerStatuses[0].ready'
     }
+
+    'demo-reset' { & bash "$PSScriptRoot/scripts/demo_reset.sh" }
 
     'k8s-down' {
         & kubectl delete namespace waba-ingestion waba-processing waba-serving waba-governance waba-monitoring --ignore-not-found

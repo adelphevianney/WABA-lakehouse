@@ -615,6 +615,7 @@ swap=8GB
 ├── tests/               # tests unitaires
 └── writeup/
     ├── write-up.md      #   le livrable : 4 pages de synthèse
+    ├── demonstration.md #   plan de tournage minuté de la vidéo
     └── decisions.md     #   annexe : 50 décisions, contexte et alternatives
 ```
 
@@ -623,6 +624,9 @@ swap=8GB
 [`writeup/write-up.md`](writeup/write-up.md) — quatre pages : l'architecture, cinq décisions
 structurantes, ce que la contrainte de seize gigaoctets a imposé, les limites connues, et ce
 que je referais autrement.
+
+[`writeup/demonstration.md`](writeup/demonstration.md) donne le plan minuté de la vidéo, et
+`make demo-reset` remet la plateforme dans l'état de démonstration que ce plan suppose.
 
 Il s'appuie sur [`writeup/decisions.md`](writeup/decisions.md), le journal tenu au fil de
 l'eau : cinquante décisions, chacune avec son contexte, l'alternative écartée et la conséquence

@@ -195,6 +195,12 @@ k8s-status: ## Etat des pods de la plateforme, par namespace
 k8s-down: ## Supprime la plateforme du cluster, volumes compris
 	@kubectl delete namespace waba-ingestion waba-processing waba-serving 		waba-governance waba-monitoring --ignore-not-found
 
+# --- Demonstration --------------------------------------------------------------
+
+.PHONY: demo-reset
+demo-reset: ## Remet la plateforme dans un etat de demonstration connu
+	@bash scripts/demo_reset.sh
+
 # --- Exploitation --------------------------------------------------------------
 
 .PHONY: ps
