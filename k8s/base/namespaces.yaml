@@ -1,0 +1,44 @@
+# Un namespace par domaine, comme l'exige le §4.1.
+#
+# Le découpage n'est pas décoratif : il porte les quotas, les politiques réseau
+# et les droits d'accès. Un analyste qui consulte Superset n'a rien à faire dans
+# le namespace où tourne le broker.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: waba-ingestion
+  labels:
+    waba.io/domaine: ingestion
+    app.kubernetes.io/part-of: waba
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: waba-processing
+  labels:
+    waba.io/domaine: processing
+    app.kubernetes.io/part-of: waba
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: waba-serving
+  labels:
+    waba.io/domaine: serving
+    app.kubernetes.io/part-of: waba
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: waba-governance
+  labels:
+    waba.io/domaine: governance
+    app.kubernetes.io/part-of: waba
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: waba-monitoring
+  labels:
+    waba.io/domaine: monitoring
+    app.kubernetes.io/part-of: waba

@@ -995,3 +995,56 @@ marqueurs de transaction du producteur NiFi, qui occupent un offset sans porter 
 sonner **puis se taire**. Le second mouvement est celui qui révèle les biais de la métrique,
 et c'est celui qu'on oublie.
 
+### D49. Kustomize plutôt que Helm, et un composant pour la configuration
+
+**Contexte.** Le §4.1 demande « les manifestes Kubernetes (ou Helm charts) » et la grille parle
+d'un `helm install` ou d'un `kubectl apply -f`.
+
+**Décision.** Kustomize. Il est intégré à kubectl — rien à installer sur la machine
+d'évaluation — et les manifestes restent du Kubernetes ordinaire, relisibles sans connaître un
+langage de gabarit. Un dossier par domaine, un namespace par dossier.
+
+**Une difficulté propre à l'outil.** Un Secret et une ConfigMap sont des objets *par
+namespace* : les générer une fois et les partager entre les cinq domaines est impossible. Un
+*composant* Kustomize, référencé par chacun, évite de recopier leur déclaration cinq fois.
+
+**Conséquence assumée.** Kustomize refuse de lire un fichier hors de sa racine, par sécurité.
+Or les descriptions de topics Trino, la configuration de Loki et les tableaux de bord Grafana
+vivent dans `docker/` et servent aux deux modes de déploiement. Plutôt que d'en entretenir
+deux copies destinées à diverger, la restriction est levée explicitement dans la cible `make`,
+avec la raison écrite à côté. C'est un arbitrage entre une garantie utile pour une base
+distante et une duplication certaine dans un mono-dépôt.
+
+### D50. Quatre pannes que seul un déploiement réel révèle
+
+**Contexte.** Des manifestes qui *rendent* correctement ne prouvent rien. Les 63 objets ont
+donc été déployés pour de bon sur le cluster local, et quatre choses ont cassé — aucune
+visible à la lecture.
+
+**Kubernetes écrase les variables d'environnement des applications.** Pour chaque Service d'un
+namespace, il injecte des variables héritées de Docker : le Service `superset` produit
+`SUPERSET_PORT=tcp://10.x.x.x:8088`. Superset lit une variable du même nom, y attend un numéro
+de port, et refuse de démarrer sur *'tcp' is not a valid port number*.
+`enableServiceLinks: false` coupe l'injection ; renommer le Service n'aurait fait que repousser
+la collision au prochain composant qui suit la même convention.
+
+**Un broker KRaft ne peut pas devenir prêt.** Il s'enregistre auprès de son contrôleur — qui
+est lui-même — via son nom DNS, or un Service sans tête ne publie l'adresse d'un pod qu'une
+fois celui-ci prêt. `publishNotReadyAddresses: true` rompt le cycle.
+
+**Une sonde peut coûter plus cher que ce qu'elle surveille.** La sonde de disponibilité de
+Kafka lançait `kafka-broker-api-versions.sh`, c'est-à-dire une JVM, toutes les dix secondes.
+Sur un nœud contraint, elle provoquait exactement les délais qu'elle devait détecter.
+
+**Une configuration absente ne dit pas son nom.** Sans `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`,
+Airflow se rabat silencieusement sur SQLite, que le LocalExecutor refuse — et le message
+d'erreur parle d'exécuteur, pas de configuration manquante.
+
+**Résultat mesuré.** Treize pods en marche et prêts, les deux Jobs d'initialisation aboutis,
+Trino répondant à travers le catalogue Iceberg. La plateforme entière tourne sur Kubernetes.
+
+**Conséquence assumée.** Le Spark Operator n'est pas déployé — c'est un opérateur tiers,
+installé par son propre chart — mais les droits que l'ordonnanceur utilisera pour lui soumettre
+des `SparkApplication` sont déclarés, de sorte que son ajout ne demande aucune reprise du
+reste. Keycloak et OpenMetadata non plus ; leur namespace et leur base existent.
+

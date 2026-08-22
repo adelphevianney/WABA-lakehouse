@@ -1,0 +1,90 @@
+# Catalogue Iceberg REST.
+#
+# Le conteneur d'initialisation aligne les droits du volume : l'image tourne en
+# uid 1000 alors que Kubernetes provisionne le volume en root, et SQLite ne peut
+# alors pas créer sa base. C'est l'exact équivalent du conteneur one-shot que la
+# pile Compose utilise pour la même raison.
+apiVersion: v1
+kind: Service
+metadata:
+  name: iceberg-rest
+  namespace: waba-serving
+  labels: {app.kubernetes.io/name: iceberg-rest}
+spec:
+  selector: {app.kubernetes.io/name: iceberg-rest}
+  ports:
+    - {name: http, port: 8181, targetPort: 8181}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: iceberg-catalog
+  namespace: waba-serving
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests: {storage: 2Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iceberg-rest
+  namespace: waba-serving
+  labels: {app.kubernetes.io/name: iceberg-rest, app.kubernetes.io/part-of: waba}
+spec:
+  replicas: 1
+  # Le catalogue écrit dans un SQLite sur un volume ReadWriteOnce : deux
+  # répliques se disputeraient le fichier. La stratégie « Recreate » garantit
+  # que l'ancienne s'arrête avant que la nouvelle ne démarre.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: iceberg-rest}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: iceberg-rest, app.kubernetes.io/part-of: waba}
+    spec:
+      initContainers:
+        - name: droits-du-volume
+          image: busybox:1.37
+          command: ["sh", "-c", "chown -R 1000:1000 /persist"]
+          volumeMounts:
+            - {name: catalogue, mountPath: /persist}
+          securityContext: {runAsUser: 0}
+      containers:
+        - name: iceberg-rest
+          image: apache/iceberg-rest-fixture:1.9.1
+          env:
+            - name: CATALOG_URI
+              value: jdbc:sqlite:file:/persist/waba_catalog.db?busy_timeout=30000
+            - name: CATALOG_WAREHOUSE
+              valueFrom: {configMapKeyRef: {name: waba-config, key: ICEBERG_WAREHOUSE}}
+            - name: CATALOG_IO__IMPL
+              value: org.apache.iceberg.aws.s3.S3FileIO
+            - name: CATALOG_S3_ENDPOINT
+              valueFrom: {configMapKeyRef: {name: waba-config, key: MINIO_ENDPOINT}}
+            - name: CATALOG_S3_PATH__STYLE__ACCESS
+              value: "true"
+            - name: AWS_REGION
+              valueFrom: {configMapKeyRef: {name: waba-config, key: AWS_REGION}}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: MINIO_ROOT_USER}}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: MINIO_ROOT_PASSWORD}}
+          ports:
+            - {name: http, containerPort: 8181}
+          readinessProbe:
+            httpGet: {path: /v1/config, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: {memory: 384Mi, cpu: 100m}
+            limits: {memory: 768Mi}
+          volumeMounts:
+            - {name: catalogue, mountPath: /persist}
+      volumes:
+        - name: catalogue
+          persistentVolumeClaim: {claimName: iceberg-catalog}

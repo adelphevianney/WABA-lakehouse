@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: waba-serving
+
+resources:
+  - minio.yaml
+  - iceberg-rest.yaml
+  - trino.yaml
+
+components:
+  - ../../components/config-commune
+
+configMapGenerator:
+  # Descriptions des topics Kafka, reprises telles quelles de la pile Compose :
+  # un topic ne transporte que des octets, ce sont ces fichiers qui lui donnent
+  # un schema SQL.
+  - name: trino-topics
+    files:
+      - ../../../docker/trino/kafka/silver-bank-transactions.json
+      - ../../../docker/trino/kafka/gold-fraud-alerts.json
+      - ../../../docker/trino/kafka/gold-aml-events.json
+      - ../../../docker/trino/kafka/dlq-financial-events.json

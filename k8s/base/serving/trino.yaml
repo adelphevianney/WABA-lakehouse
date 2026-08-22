@@ -1,0 +1,93 @@
+# Moteur de requêtes SQL — point d'entrée analytique de la plateforme.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-catalogues
+  namespace: waba-serving
+data:
+  iceberg.properties: |
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri=http://iceberg-rest.waba-serving.svc.cluster.local:8181
+    iceberg.rest-catalog.warehouse=s3://lakehouse/
+    fs.native-s3.enabled=true
+    s3.endpoint=http://minio.waba-serving.svc.cluster.local:9000
+    s3.region=us-east-1
+    s3.path-style-access=true
+    # Les identifiants sont résolus à l'exécution depuis l'environnement du
+    # conteneur, lui-même alimenté par un Secret : le fichier de catalogue,
+    # monté en clair, n'en contient aucun.
+    s3.aws-access-key=${ENV:AWS_ACCESS_KEY_ID}
+    s3.aws-secret-key=${ENV:AWS_SECRET_ACCESS_KEY}
+  kafka.properties: |
+    connector.name=kafka
+    kafka.nodes=kafka.waba-ingestion.svc.cluster.local:9092
+    kafka.default-schema=default
+    kafka.table-description-supplier=FILE
+    kafka.table-description-dir=/etc/trino/kafka
+    kafka.table-names=silver-bank-transactions,gold-fraud-alerts,gold-aml-events,dlq-financial-events
+    kafka.hide-internal-columns=false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trino
+  namespace: waba-serving
+  labels: {app.kubernetes.io/name: trino}
+spec:
+  selector: {app.kubernetes.io/name: trino}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trino
+  namespace: waba-serving
+  labels: {app.kubernetes.io/name: trino, app.kubernetes.io/part-of: waba}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: trino}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: trino, app.kubernetes.io/part-of: waba}
+    spec:
+      containers:
+        - name: trino
+          image: trinodb/trino:476
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: MINIO_ROOT_USER}}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: MINIO_ROOT_PASSWORD}}
+            # Huit pays sur trois fuseaux : le fuseau de session est forcé, sans
+            # quoi un horodatage Iceberg et son équivalent Kafka divergeraient.
+            - {name: TZ, value: UTC}
+          ports:
+            - {name: http, containerPort: 8080}
+          # `/v1/info` répond bien avant que le coordinateur n'accepte des
+          # requêtes : la sonde de disponibilité attend que `starting` retombe,
+          # faute de quoi le service serait déclaré prêt trop tôt.
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c",
+                        "curl -fsS http://localhost:8080/v1/info | grep -q '\"starting\":false'"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /v1/info, port: http}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests: {memory: 1Gi, cpu: 250m}
+            limits: {memory: 3Gi}
+          volumeMounts:
+            - {name: catalogues, mountPath: /etc/trino/catalog}
+            - {name: topics, mountPath: /etc/trino/kafka}
+      volumes:
+        - name: catalogues
+          configMap: {name: trino-catalogues}
+        - name: topics
+          configMap: {name: trino-topics}

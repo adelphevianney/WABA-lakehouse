@@ -1,0 +1,233 @@
+# Orchestration. La base de métadonnées porte l'historique des exécutions :
+# elle réclame un volume, comme l'exige le §4.1.
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-db
+  namespace: waba-processing
+spec:
+  clusterIP: None
+  selector: {app.kubernetes.io/name: airflow-db}
+  ports:
+    - {name: postgres, port: 5432, targetPort: 5432}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: airflow-db
+  namespace: waba-processing
+  labels: {app.kubernetes.io/name: airflow-db, app.kubernetes.io/part-of: waba}
+spec:
+  serviceName: airflow-db
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: airflow-db}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: airflow-db, app.kubernetes.io/part-of: waba}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: AIRFLOW_DB_USER}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: AIRFLOW_DB_PASSWORD}}
+            - {name: POSTGRES_DB, value: airflow}
+            # Le volume est monté sur le parent : sans sous-répertoire,
+            # PostgreSQL refuse d'initialiser un répertoire non vide — celui-ci
+            # contient déjà `lost+found`.
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports:
+            - {name: postgres, containerPort: 5432}
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "airflow", "-d", "airflow"]}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: {memory: 256Mi, cpu: 100m}
+            limits: {memory: 512Mi}
+          volumeMounts:
+            - {name: donnees, mountPath: /var/lib/postgresql/data}
+  volumeClaimTemplates:
+    - metadata:
+        name: donnees
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: {requests: {storage: 5Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-webserver
+  namespace: waba-processing
+  labels: {app.kubernetes.io/name: airflow-webserver}
+spec:
+  selector: {app.kubernetes.io/name: airflow-webserver}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-webserver
+  namespace: waba-processing
+  labels: {app.kubernetes.io/name: airflow-webserver, app.kubernetes.io/part-of: waba}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: airflow-webserver}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: airflow-webserver, app.kubernetes.io/part-of: waba}
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: webserver
+          # Image construite par le dépôt (docker/airflow/Dockerfile). Elle doit
+          # être poussée dans un registre joignable par le cluster, ou chargée
+          # dans ses nœuds — voir k8s/README.md.
+          image: waba/airflow:dev
+          imagePullPolicy: IfNotPresent
+          args: ["webserver"]
+          envFrom:
+            - configMapRef: {name: waba-config}
+            - secretRef: {name: waba-secrets}
+          env:
+            - {name: AIRFLOW__CORE__EXECUTOR, value: LocalExecutor}
+            - {name: AIRFLOW__CORE__LOAD_EXAMPLES, value: "false"}
+            - {name: AIRFLOW__METRICS__STATSD_ON, value: "true"}
+            - name: AIRFLOW__METRICS__STATSD_HOST
+              value: statsd-exporter.waba-monitoring.svc.cluster.local
+            - {name: AIRFLOW__METRICS__STATSD_PORT, value: "9125"}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          resources:
+            requests: {memory: 768Mi, cpu: 200m}
+            limits: {memory: 1200Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  namespace: waba-processing
+  labels: {app.kubernetes.io/name: airflow-scheduler, app.kubernetes.io/part-of: waba}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: airflow-scheduler}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: airflow-scheduler, app.kubernetes.io/part-of: waba}
+    spec:
+      enableServiceLinks: false
+      # Sur Kubernetes, l'ordonnanceur ne démarre plus de conteneur Docker : il
+      # soumet des SparkApplication au Spark Operator. Le compte de service
+      # porte les droits correspondants, là où la pile Compose donnait accès au
+      # socket du démon.
+      serviceAccountName: airflow
+      containers:
+        - name: scheduler
+          image: waba/airflow:dev
+          imagePullPolicy: IfNotPresent
+          args: ["scheduler"]
+          envFrom:
+            - configMapRef: {name: waba-config}
+            - secretRef: {name: waba-secrets}
+          env:
+            - {name: AIRFLOW__CORE__EXECUTOR, value: LocalExecutor}
+            - {name: AIRFLOW__CORE__LOAD_EXAMPLES, value: "false"}
+            - {name: AIRFLOW__CORE__PARALLELISM, value: "2"}
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - airflow jobs check --job-type SchedulerJob --hostname $(hostname)
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests: {memory: 768Mi, cpu: 200m}
+            limits: {memory: 1500Mi}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: airflow
+  namespace: waba-processing
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: airflow-soumet-spark
+  namespace: waba-processing
+rules:
+  # Le strict nécessaire pour soumettre un job et en suivre l'issue : ni
+  # création de pods arbitraires, ni accès aux secrets d'autres namespaces.
+  - apiGroups: ["sparkoperator.k8s.io"]
+    resources: ["sparkapplications", "sparkapplications/status"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: airflow-soumet-spark
+  namespace: waba-processing
+subjects:
+  - {kind: ServiceAccount, name: airflow, namespace: waba-processing}
+roleRef:
+  kind: Role
+  name: airflow-soumet-spark
+  apiGroup: rbac.authorization.k8s.io
+---
+# Migration du schema et creation du compte d'administration. Un Job plutot
+# qu'un initContainer sur chaque deploiement : deux migrations concurrentes se
+# disputeraient les memes tables.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: airflow-init
+  namespace: waba-processing
+  labels: {app.kubernetes.io/name: airflow-init, app.kubernetes.io/part-of: waba}
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: airflow-init, app.kubernetes.io/part-of: waba}
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: init
+          image: waba/airflow:dev
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              airflow db migrate
+              airflow users create --username admin --role Admin                 --firstname WABA --lastname Admin --email admin@waba.local                 --password "$AIRFLOW_ADMIN_PASSWORD" || true
+              airflow pools set waba_catalogue 1 "Un ecrivain a la fois sur le catalogue"
+          envFrom:
+            - configMapRef: {name: waba-config}
+            - secretRef: {name: waba-secrets}
+          env:
+            - {name: AIRFLOW__CORE__EXECUTOR, value: LocalExecutor}
+          resources:
+            requests: {memory: 512Mi, cpu: 100m}
+            limits: {memory: 1Gi}

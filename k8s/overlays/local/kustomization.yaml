@@ -1,0 +1,19 @@
+# Surcouche pour un cluster local — Docker Desktop, Minikube ou kind.
+#
+# Elle reduit les demandes de ressources pour que la plateforme entre dans les
+# quelques gigaoctets qu'un poste de travail peut ceder, et ramene les volumes a
+# des tailles de demonstration. La base, elle, reste dimensionnee pour un
+# deploiement reel.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - path: ressources-reduites.yaml
+    target:
+      kind: StatefulSet
+  - path: ressources-reduites.yaml
+    target:
+      kind: Deployment

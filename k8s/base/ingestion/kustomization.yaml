@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: waba-ingestion
+
+resources:
+  - kafka.yaml
+  - nifi.yaml
+
+components:
+  - ../../components/config-commune

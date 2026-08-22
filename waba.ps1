@@ -13,7 +13,7 @@ param(
         'ingest-l1', 'compact-l1', 'bronze-views', 'silver-l2', 'gold-l2', 'queries-l1',
         'smoke-l1', 'smoke-l2', 'queries-l2', 'up-l3', 'down-l3', 'nifi-flow',
         'nifi-status', 'nifi-replay', 'topics', 'stream-silver', 'stream-silver-once',
-        'stream-gold', 'stream-gold-once', 'queries-l3', 'smoke-l3', 'up-l4', 'down-l4', 'dashboards',
+        'stream-gold', 'stream-gold-once', 'queries-l3', 'smoke-l3', 'up-l4', 'down-l4', 'dashboards', 'k8s-render', 'k8s-up', 'k8s-status', 'k8s-down',
         'ps', 'logs', 'sql', 'clean')]
     [string]$Command = 'help',
 
@@ -98,6 +98,10 @@ switch ($Command) {
         Write-Host '    up-l4        Démarre le Level 4 (toute la plateforme + Superset)'
         Write-Host '    down-l4      Arrête le Level 4 (données conservées)'
         Write-Host '    dashboards   (Re)construit les 3 tableaux de bord Superset'
+        Write-Host '    k8s-render   Rend les manifestes Kubernetes sans les appliquer'
+        Write-Host '    k8s-up       Deploie toute la plateforme sur le cluster courant'
+        Write-Host '    k8s-status   Etat des pods de la plateforme'
+        Write-Host '    k8s-down     Supprime la plateforme du cluster'
         Write-Host ''
         Write-Host '    ps         Consommation mémoire des conteneurs'
         Write-Host '    logs <svc> Suit les logs d''un service'
@@ -224,6 +228,25 @@ switch ($Command) {
     'down-l4' { Invoke-Compose @('--profile', 'l4', 'down') }
 
     'dashboards' { & python "$PSScriptRoot\scripts\superset_dashboards.py" }
+
+    # Kustomize lit des fichiers hors de sa racine — les configurations
+    # partagees avec la pile Compose — d'ou la levee de restriction.
+    'k8s-render' { & kubectl kustomize --load-restrictor LoadRestrictionsNone k8s/overlays/local }
+
+    'k8s-up' {
+        if (-not (Test-Path 'k8s/base/secrets.env')) {
+            throw 'Creer k8s/base/secrets.env depuis k8s/base/secrets.env.example'
+        }
+        & kubectl kustomize --load-restrictor LoadRestrictionsNone k8s/overlays/local | & kubectl apply -f -
+    }
+
+    'k8s-status' {
+        & kubectl get pods -A -l app.kubernetes.io/part-of=waba -o custom-columns='NAMESPACE:.metadata.namespace,POD:.metadata.name,ETAT:.status.phase,PRET:.status.containerStatuses[0].ready'
+    }
+
+    'k8s-down' {
+        & kubectl delete namespace waba-ingestion waba-processing waba-serving waba-governance waba-monitoring --ignore-not-found
+    }
 
     'ps' { docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' }
 

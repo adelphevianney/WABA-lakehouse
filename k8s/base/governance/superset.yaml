@@ -1,0 +1,131 @@
+# Visualisation et base de métadonnées de gouvernance.
+#
+# Superset est un service à état : ses tableaux de bord, ses sources et ses
+# utilisateurs vivent dans PostgreSQL. Un serveur porte les bases des trois
+# services de gouvernance — Superset, et plus tard Keycloak et OpenMetadata.
+apiVersion: v1
+kind: Service
+metadata:
+  name: governance-db
+  namespace: waba-governance
+spec:
+  clusterIP: None
+  selector: {app.kubernetes.io/name: governance-db}
+  ports:
+    - {name: postgres, port: 5432, targetPort: 5432}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: governance-db
+  namespace: waba-governance
+  labels: {app.kubernetes.io/name: governance-db, app.kubernetes.io/part-of: waba}
+spec:
+  serviceName: governance-db
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: governance-db}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: governance-db, app.kubernetes.io/part-of: waba}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: GOVERNANCE_DB_USER}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: GOVERNANCE_DB_PASSWORD}}
+            - {name: POSTGRES_DB, value: superset}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports:
+            - {name: postgres, containerPort: 5432}
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "waba", "-d", "superset"]}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: {memory: 256Mi, cpu: 100m}
+            limits: {memory: 512Mi}
+          volumeMounts:
+            - {name: donnees, mountPath: /var/lib/postgresql/data}
+  volumeClaimTemplates:
+    - metadata:
+        name: donnees
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: {requests: {storage: 5Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: superset
+  namespace: waba-governance
+  labels: {app.kubernetes.io/name: superset}
+spec:
+  selector: {app.kubernetes.io/name: superset}
+  ports:
+    - {name: http, port: 8088, targetPort: 8088}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: superset
+  namespace: waba-governance
+  labels: {app.kubernetes.io/name: superset, app.kubernetes.io/part-of: waba}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: superset}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: superset, app.kubernetes.io/part-of: waba}
+    spec:
+      # Kubernetes injecte, pour chaque Service du namespace, des variables
+      # d'environnement heritees de Docker : le Service `superset` produit
+      # `SUPERSET_PORT=tcp://10.x.x.x:8088`. Superset lit une variable du meme
+      # nom et attend un numero de port — il refuse de demarrer sur
+      # « 'tcp' is not a valid port number ». Couper cette injection est la
+      # seule correction propre : renommer le Service masquerait le probleme
+      # jusqu'a la prochaine collision.
+      enableServiceLinks: false
+      # Superset exige que son schema existe : le Job d'initialisation le
+      # migre et cree le compte d'administration avant que le pod ne demarre.
+      initContainers:
+        - name: attente-du-schema
+          image: waba/superset:dev
+          imagePullPolicy: IfNotPresent
+          command: [/bin/bash, -c, superset db upgrade && superset init]
+          env:
+            - name: SUPERSET_SECRET_KEY
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: SUPERSET_SECRET_KEY}}
+            - name: SUPERSET_DATABASE_URI
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: SUPERSET_DATABASE_URI}}
+      containers:
+        - name: superset
+          # Image construite par le dépôt : elle embarque le pilote SQLAlchemy
+          # de Trino, absent de l'image officielle.
+          image: waba/superset:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SUPERSET_SECRET_KEY
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: SUPERSET_SECRET_KEY}}
+            - name: SUPERSET_DATABASE_URI
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: SUPERSET_DATABASE_URI}}
+            - name: WABA_TRINO_URI
+              value: trino://waba@trino.waba-serving.svc.cluster.local:8080/iceberg
+          ports:
+            - {name: http, containerPort: 8088}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          resources:
+            requests: {memory: 512Mi, cpu: 200m}
+            limits: {memory: 1500Mi}

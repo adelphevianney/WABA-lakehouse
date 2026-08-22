@@ -1,0 +1,109 @@
+# Exposition des interfaces (§4.1).
+#
+# Un seul Ingress plutôt qu'un par service : les cinq interfaces partagent un
+# domaine, et les regrouper rend lisible d'un coup d'œil ce que la plateforme
+# expose — ce qui est précisément la question qu'on se pose lors d'une revue de
+# sécurité.
+#
+# Le routage se fait par nom d'hôte plutôt que par chemin. Airflow, Superset et
+# NiFi construisent des URLs absolues à partir de la racine ; servis sous un
+# préfixe, leurs redirections et leurs ressources statiques pointeraient à côté.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: waba-interfaces
+  namespace: waba-serving
+  annotations:
+    # NiFi ne parle que HTTPS : le contrôleur doit rechiffrer vers le service,
+    # là où les autres reçoivent du trafic en clair sur le réseau interne.
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+spec:
+  rules:
+    - host: trino.waba.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: trino
+                port: {number: 8080}
+    - host: minio.waba.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minio
+                port: {number: 9001}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: waba-gouvernance
+  namespace: waba-governance
+spec:
+  rules:
+    - host: superset.waba.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: superset
+                port: {number: 8088}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: waba-supervision
+  namespace: waba-monitoring
+spec:
+  rules:
+    - host: grafana.waba.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port: {number: 3000}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: waba-orchestration
+  namespace: waba-processing
+spec:
+  rules:
+    - host: airflow.waba.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: airflow-webserver
+                port: {number: 8080}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: waba-ingestion
+  namespace: waba-ingestion
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+spec:
+  rules:
+    - host: nifi.waba.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nifi
+                port: {number: 8443}

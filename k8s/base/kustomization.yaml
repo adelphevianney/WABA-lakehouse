@@ -1,0 +1,29 @@
+# Deploiement complet de la plateforme WABA sur Kubernetes (4.1).
+#
+#     kubectl apply -k k8s/overlays/local
+#
+# Kustomize plutot que Helm : le sujet accepte les deux, et Kustomize est
+# integre a kubectl — aucun outil a installer, et les manifestes restent du
+# Kubernetes ordinaire, lisibles sans connaitre un langage de gabarit.
+#
+# Un dossier par domaine, et un namespace par dossier : le decoupage du 4.1
+# n'est pas decoratif, il porte les quotas, les politiques reseau et les droits.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespaces.yaml
+  - serving
+  - ingestion
+  - processing
+  - governance
+  - monitoring
+  # Les Ingress declarent chacun leur namespace : ils restent au niveau de la
+  # base, ou l'on voit d'un coup d'oeil tout ce que la plateforme expose.
+  - ingress.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: waba
+      app.kubernetes.io/managed-by: kustomize

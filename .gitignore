@@ -43,3 +43,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+
+# Secrets du deploiement Kubernetes : seul l'exemple est versionne.
+k8s/base/secrets.env

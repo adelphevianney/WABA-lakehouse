@@ -1,0 +1,29 @@
+# Composant reutilisable : la configuration et les secrets dont chaque domaine a
+# besoin. Un Secret et une ConfigMap sont des objets *par namespace* — les
+# generer une fois et les partager est impossible. Ce composant evite de recopier
+# leur declaration dans les cinq kustomizations de domaine.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+configMapGenerator:
+  - name: waba-config
+    behavior: create
+    literals:
+      - MINIO_ENDPOINT=http://minio.waba-serving.svc.cluster.local:9000
+      - ICEBERG_REST_URI=http://iceberg-rest.waba-serving.svc.cluster.local:8181
+      - ICEBERG_WAREHOUSE=s3://lakehouse/
+      - KAFKA_BOOTSTRAP_SERVERS=kafka-0.kafka.waba-ingestion.svc.cluster.local:9092
+      - BUCKET_RAW=raw-landing
+      - BUCKET_ARCHIVE=archive
+      - AWS_REGION=us-east-1
+      - TZ=UTC
+      - WABA_COUNTRIES=CI,SN,ML,BF,GN,TG,BJ,GH
+
+# Les valeurs vivent dans `secrets.env`, exclu du depot ; `secrets.env.example`
+# en donne la liste. Aucun secret n'apparait dans un manifeste versionne, ce
+# qu'exige explicitement le 4.1.
+secretGenerator:
+  - name: waba-secrets
+    behavior: create
+    envs:
+      - ../../base/secrets.env

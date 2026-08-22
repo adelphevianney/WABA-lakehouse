@@ -1,0 +1,85 @@
+# Ingestion temps réel. Le flux lui-même n'est pas dans le manifeste : il est
+# construit par `scripts/nifi_flow.py` contre l'API, exactement comme en Compose.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nifi
+  namespace: waba-ingestion
+  labels: {app.kubernetes.io/name: nifi}
+spec:
+  clusterIP: None
+  selector: {app.kubernetes.io/name: nifi}
+  ports:
+    - {name: https, port: 8443, targetPort: 8443}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nifi
+  namespace: waba-ingestion
+  labels: {app.kubernetes.io/name: nifi, app.kubernetes.io/part-of: waba}
+spec:
+  serviceName: nifi
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: nifi}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: nifi, app.kubernetes.io/part-of: waba}
+    spec:
+      containers:
+        - name: nifi
+          image: apache/nifi:2.2.0
+          env:
+            # NiFi 2 a supprimé l'écoute HTTP en clair : le serveur démarre en
+            # HTTPS avec un certificat auto-signé, quoi qu'on configure.
+            - name: SINGLE_USER_CREDENTIALS_USERNAME
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: NIFI_USERNAME}}
+            - name: SINGLE_USER_CREDENTIALS_PASSWORD
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: NIFI_PASSWORD}}
+            # Sans cela NiFi se lie au nom d'hôte du pod : ni la sonde ni le
+            # Service ne l'atteindraient.
+            - {name: NIFI_WEB_HTTPS_HOST, value: "0.0.0.0"}
+            - name: NIFI_WEB_PROXY_HOST
+              value: "nifi.waba-ingestion.svc.cluster.local:8443,nifi.waba.local"
+            - {name: NIFI_JVM_HEAP_INIT, value: 512m}
+            - {name: NIFI_JVM_HEAP_MAX, value: 1g}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: MINIO_ROOT_USER}}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: waba-secrets, key: MINIO_ROOT_PASSWORD}}
+          ports:
+            - {name: https, containerPort: 8443}
+          # Un code 401 atteste que le serveur répond : l'authentification est
+          # faite ensuite par le client. Exiger un 200 déclarerait le pod
+          # indisponible alors qu'il fonctionne.
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - curl -k -sf -o /dev/null https://localhost:8443/nifi-api/access || test $? -eq 22
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket: {port: https}
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          resources:
+            requests: {memory: 1Gi, cpu: 250m}
+            limits: {memory: 2Gi}
+          volumeMounts:
+            - {name: etat, mountPath: /opt/nifi/nifi-current/state}
+            - {name: depots, mountPath: /opt/nifi/nifi-current/repositories}
+  volumeClaimTemplates:
+    - metadata:
+        name: etat
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: {requests: {storage: 1Gi}}
+    - metadata:
+        name: depots
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: {requests: {storage: 5Gi}}

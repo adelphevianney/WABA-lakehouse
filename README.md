@@ -50,7 +50,7 @@ flowchart LR
 | **Level 1** | Ingestion & Lakehouse batch (Streamlit, MinIO, Spark, Iceberg, Trino) | ✅ Complet — générateur, ingestion Spark, 8 tables `raw.*` idempotentes |
 | **Level 2** | Orchestration Airflow & architecture Médaillon | ✅ Complet — médaillon Bronze/Silver/Gold, 7 KPIs, 4 DAGs chaînés par Datasets |
 | **Level 3** | Pipeline hybride batch & streaming (NiFi, Kafka, Spark Streaming) | ✅ Complet — NiFi → Kafka, 2 jobs streaming, DLQ, requête Lambda unifiée, 10 contrôles de fumée |
-| **Level 4** | Kubernetes, gouvernance & observabilité | 🟡 Superset (3 tableaux) et observabilité (Prometheus, Loki, Grafana, 3 alertes) opérationnels — Helm, SSO et catalogue en cours |
+| **Level 4** | Kubernetes, gouvernance & observabilité | 🟡 Déploiement K8s complet (13 pods), Superset (3 tableaux) et observabilité (3 alertes) opérationnels — SSO et catalogue non traités |
 
 ---
 
@@ -531,6 +531,23 @@ autre chose que ce que l'énoncé nomme — le décalage par groupe de consommat
 Spark ne validant pas ses offsets auprès du broker — et **l'écart est écrit dans la
 description de chaque règle**, là où l'exploitant le lira au moment où elle sonne.
 
+### Déploiement Kubernetes
+
+```bash
+cp k8s/base/secrets.env.example k8s/base/secrets.env
+make k8s-up        # toute la plateforme, en une commande
+make k8s-status    # état des pods, par namespace
+```
+
+Cinq namespaces par domaine, ConfigMaps et Secrets générés hors dépôt, sondes de vivacité et
+de disponibilité, PVC pour tout ce qui porte un état, et un Ingress par interface. Le détail
+est dans [`k8s/README.md`](k8s/README.md), y compris **quatre pannes que seul un déploiement
+réel révèle** — dont l'injection de variables d'environnement par Kubernetes, qui empêchait
+purement et simplement Superset de démarrer.
+
+Mesuré : 63 objets, **13 pods en marche et prêts**, Trino répondant à travers le catalogue
+Iceberg.
+
 ## Contrainte mémoire — pourquoi des profils
 
 La plateforme complète du Level 4 dépasse 24 Go de RAM. Le développement étant mené sur une machine
@@ -589,8 +606,7 @@ swap=8GB
 │       ├── raw_to_silver.py #   Job 1 — validation, DLQ, double récepteur
 │       └── silver_to_gold.py #  Job 2 — fraude, AML, liquidité
 ├── airflow/dags/        # Level 2 — les 4 DAGs et leur socle commun
-├── superset/            # Level 4 — définitions des dashboards
-├── k8s/                 # Level 4 — manifestes et charts Helm
+├── k8s/                 # Level 4 — manifestes Kubernetes (Kustomize)
 ├── sql/                 # requêtes analytiques par niveau, montées dans Trino
 ├── scripts/             # tests de fumée et utilitaires
 │   ├── smoke_l1..l3     #   contrôles de non-régression, un par niveau

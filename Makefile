@@ -169,6 +169,32 @@ down-l4: ## Arrête le Level 4 (les données sont conservées)
 dashboards: ## (Re)construit les 3 tableaux de bord Superset du §4.2
 	@python3 scripts/superset_dashboards.py
 
+# --- Level 4.1 : deploiement Kubernetes ----------------------------------------
+#
+# `--load-restrictor LoadRestrictionsNone` autorise Kustomize a lire des fichiers
+# situes hors de sa racine. C'est deliberé : les descriptions de topics Trino,
+# la configuration de Loki et les tableaux de bord Grafana vivent dans `docker/`
+# et servent aux deux modes de deploiement. Les recopier sous `k8s/` creerait
+# deux sources de verite destinees a diverger.
+KUSTOMIZE := kubectl kustomize --load-restrictor LoadRestrictionsNone k8s/overlays/local
+
+.PHONY: k8s-render
+k8s-render: ## Rend les manifestes Kubernetes sans les appliquer
+	@$(KUSTOMIZE)
+
+.PHONY: k8s-up
+k8s-up: ## Deploie toute la plateforme sur le cluster courant
+	@test -f k8s/base/secrets.env || 		(echo "Creer k8s/base/secrets.env depuis secrets.env.example" && false)
+	@$(KUSTOMIZE) | kubectl apply -f -
+
+.PHONY: k8s-status
+k8s-status: ## Etat des pods de la plateforme, par namespace
+	@kubectl get pods -A -l app.kubernetes.io/part-of=waba 		-o custom-columns='NAMESPACE:.metadata.namespace,POD:.metadata.name,ETAT:.status.phase,PRET:.status.containerStatuses[0].ready'
+
+.PHONY: k8s-down
+k8s-down: ## Supprime la plateforme du cluster, volumes compris
+	@kubectl delete namespace waba-ingestion waba-processing waba-serving 		waba-governance waba-monitoring --ignore-not-found
+
 # --- Exploitation --------------------------------------------------------------
 
 .PHONY: ps
